@@ -3,15 +3,19 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-/*global process,__dirname,define,run,suite,test*/
+/*eslint-env mocha*/
+/*global define,run*/
 
 var assert = require('assert');
 var path = require('path');
 var glob = require('glob');
 var istanbul = require('istanbul');
+var i_remap = require('remap-istanbul/lib/remap');
 var jsdom = require('jsdom-no-contextify');
 var minimatch = require('minimatch');
 var async = require('async');
+var fs = require('fs');
+var vm = require('vm');
 var TEST_GLOB = '**/test/**/*.test.js';
 
 var optimist = require('optimist')
@@ -19,6 +23,7 @@ var optimist = require('optimist')
 	.describe('build', 'Run from out-build').boolean('build')
 	.describe('run', 'Run a single file').string('run')
 	.describe('coverage', 'Generate a coverage report').boolean('coverage')
+	.describe('forceLoad', 'Force loading').boolean('forceLoad')
 	.describe('browser', 'Run tests in a browser').boolean('browser')
 	.alias('h', 'help').boolean('h')
 	.describe('h', 'Show help');
@@ -40,7 +45,7 @@ function loadSingleTest(test) {
 	return function (cb) {
 		define([moduleId], function () {
 			cb(null);
-		});
+		}, cb);
 	};
 }
 
@@ -50,10 +55,10 @@ function loadClientTests(cb) {
 			return file.replace(/\.js$/, '');
 		});
 
-		// load all modules
+		// load all modules with the AMD loader
 		define(modules, function () {
 			cb(null);
-		});
+		}, cb);
 	});
 }
 
@@ -61,13 +66,12 @@ function loadPluginTests(cb) {
 	var root = path.join(path.dirname(__dirname), 'extensions');
 	glob(TEST_GLOB, { cwd: root }, function (err, files) {
 
+		// load modules with commonjs
 		var modules = files.map(function (file) {
-			return 'extensions/' + file.replace(/\.js$/, '');
+			return '../extensions/' + file.replace(/\.js$/, '');
 		});
-
-		define(modules, function() {
-			cb();
-		});
+		modules.forEach(require);
+		cb(null);
 	});
 }
 
@@ -77,13 +81,13 @@ function main() {
 	});
 
 	var loaderConfig = {
-	    nodeRequire: require,
-	    nodeMain: __filename,
-		baseUrl: path.join(path.dirname(__dirname)),
+		nodeRequire: require,
+		nodeMain: __filename,
+		baseUrl: path.join(path.dirname(__dirname), 'src'),
 		paths: {
-			'vs': out + '/vs',
-			'lib': out + '/lib',
-			'bootstrap': out + '/bootstrap'
+			'vs': `../${ out }/vs`,
+			'lib': `../${ out }/lib`,
+			'bootstrap': `../${ out }/bootstrap`
 		},
 		catchError: true
 	};
@@ -91,7 +95,11 @@ function main() {
 	if (argv.coverage) {
 		var instrumenter = new istanbul.Instrumenter();
 
+		var seenSources = {};
+
 		loaderConfig.nodeInstrumenter = function (contents, source) {
+			seenSources[source] = true;
+
 			if (minimatch(source, TEST_GLOB)) {
 				return contents;
 			}
@@ -104,11 +112,81 @@ function main() {
 				return;
 			}
 
-			var collector = new istanbul.Collector();
-			collector.add(global.__coverage__);
+			if (argv.forceLoad) {
+				var allFiles = glob.sync(out + '/vs/**/*.js');
+				allFiles = allFiles.map(function(source) {
+					return path.join(__dirname, '..', source);
+				});
+				allFiles = allFiles.filter(function(source) {
+					if (seenSources[source]) {
+						return false;
+					}
+					if (minimatch(source, TEST_GLOB)) {
+						return false;
+					}
+					if (/fixtures/.test(source)) {
+						return false;
+					}
+					return true;
+				});
+				allFiles.forEach(function(source, index) {
+					var contents = fs.readFileSync(source).toString();
+					contents = instrumenter.instrumentSync(contents, source);
+					var stopAt = contents.indexOf('}\n__cov');
+					stopAt = contents.indexOf('}\n__cov', stopAt + 1);
 
-			var reporter = new istanbul.Reporter(null, path.join(path.dirname(path.dirname(__dirname)), 'Code-Coverage'));
-			reporter.add('html');
+					var str = '(function() {' + contents.substr(0, stopAt + 1) + '});';
+					var r = vm.runInThisContext(str, source);
+					r.call(global);
+				});
+			}
+
+			var remappedCoverage = i_remap(global.__coverage__).getFinalCoverage();
+
+			// The remapped coverage comes out with broken paths
+			var toUpperDriveLetter = function(str) {
+				if (/^[a-z]:/.test(str)) {
+					return str.charAt(0).toUpperCase() + str.substr(1);
+				}
+				return str;
+			};
+			var toLowerDriveLetter = function(str) {
+				if (/^[A-Z]:/.test(str)) {
+					return str.charAt(0).toLowerCase() + str.substr(1);
+				}
+				return str;
+			};
+
+			var REPO_PATH = toUpperDriveLetter(path.join(__dirname, '..'));
+			var fixPath = function(brokenPath) {
+				var startIndex = brokenPath.indexOf(REPO_PATH);
+				if (startIndex === -1) {
+					return toLowerDriveLetter(brokenPath);
+				}
+				return toLowerDriveLetter(brokenPath.substr(startIndex));
+			};
+
+			var finalCoverage = {};
+			for (var entryKey in remappedCoverage) {
+				var entry = remappedCoverage[entryKey];
+				entry.path = fixPath(entry.path);
+				finalCoverage[fixPath(entryKey)] = entry;
+			}
+
+			var collector = new istanbul.Collector();
+			collector.add(finalCoverage);
+
+			var coveragePath = path.join(path.dirname(__dirname), '.build', 'coverage');
+			var reportTypes = [];
+			if (argv.run) {
+				// single file running
+				coveragePath += '-single';
+				reportTypes = ['lcovonly'];
+			} else {
+				reportTypes = ['json', 'lcov', 'html'];
+			}
+			var reporter = new istanbul.Reporter(null, coveragePath);
+			reporter.addAll(reportTypes);
 			reporter.write(collector, true, function () {});
 		});
 	}
@@ -145,7 +223,12 @@ function main() {
 		loadTasks.push(loadPluginTests);
 	}
 
-	async.parallel(loadTasks, function () {
+	async.parallel(loadTasks, function (err) {
+		if (err) {
+			console.error(err);
+			return process.exit(1);
+		}
+
 		process.stderr.write = write;
 
 		if (!argv.run) {
@@ -157,8 +240,34 @@ function main() {
 			});
 		}
 
-		// fire up mocha
-		run();
+		// report failing test for every unexpected error during any of the tests
+		var unexpectedErrors = [];
+		suite('Errors', function () {
+			test('should not have unexpected errors in tests', function () {
+				if (unexpectedErrors.length) {
+					unexpectedErrors.forEach(function (stack) {
+						console.error('');
+						console.error(stack);
+					});
+
+					assert.ok(false);
+				}
+			});
+		});
+
+		// replace the default unexpected error handler to be useful during tests
+		loader(['vs/base/common/errors'], function(errors) {
+			errors.setUnexpectedErrorHandler(function (err) {
+				try {
+					throw new Error('oops');
+				} catch (e) {
+					unexpectedErrors.push((err && err.message ? err.message : err) + '\n' + e.stack);
+				}
+			});
+
+			// fire up mocha
+			run();
+		});
 	});
 }
 

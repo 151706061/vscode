@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {createDecorator, ServiceIdentifier} from 'vs/platform/instantiation/common/instantiation'
+import {createDecorator} from 'vs/platform/instantiation/common/instantiation';
 
 export interface IBadge {
 	getDescription(): string;
@@ -46,13 +46,20 @@ export class TextBadge extends BaseBadge {
 	}
 }
 
+export class IconBadge extends BaseBadge {
+
+	constructor(descriptorFn: (args: any) => string) {
+		super(descriptorFn);
+	}
+}
+
 export class ProgressBadge extends BaseBadge {
 }
 
-export var IActivityService = createDecorator<IActivityService>('activityService');
+export const IActivityService = createDecorator<IActivityService>('activityService');
 
 export interface IActivityService {
-	serviceId: ServiceIdentifier<any>;
+	_serviceBrand: any;
 
 	/**
 	 * Show activity in the activitybar for the given viewlet.

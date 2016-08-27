@@ -5,7 +5,8 @@
 'use strict';
 
 import * as assert from 'assert';
-import dom = require('vs/base/browser/dom');
+import * as dom from 'vs/base/browser/dom';
+const $ = dom.$;
 
 suite('dom', () => {
 	test('hasClass', () => {
@@ -82,14 +83,6 @@ suite('dom', () => {
 	//	}
 	//});
 
-	test('removeScriptTags', function () {
-		var input = "<div>test</div>";
-		assert(dom.removeScriptTags(input) === input);
-
-		var inputWithScript = "<div>test<script>window.alert('foo');</script></div>";
-		assert(dom.removeScriptTags(inputWithScript) === "<div>test</div>");
-	});
-
 	test('safeStringify', function() {
 		var obj1 = {
 			friend: null
@@ -157,4 +150,31 @@ suite('dom', () => {
 		});
 	});
 
+	suite('$', () => {
+		test('should build simple nodes', () => {
+			const div = $('div');
+			assert(div);
+			assert(div instanceof HTMLElement);
+			assert.equal(div.tagName, 'DIV');
+			assert(!div.firstChild);
+		});
+
+		test('should build nodes with attributes', () => {
+			let div = $('div', { class: 'test' });
+			assert.equal(div.className, 'test');
+
+			div = $('div', null);
+			assert.equal(div.className, '');
+		});
+
+		test('should build nodes with children', () => {
+			let div = $('div', null, $('span', { id: 'demospan' }));
+			let firstChild = div.firstChild as HTMLElement;
+			assert.equal(firstChild.tagName, 'SPAN');
+			assert.equal(firstChild.id, 'demospan');
+
+			div = $('div', null, 'hello');
+			assert.equal(div.firstChild.textContent, 'hello');
+		});
+	});
 });

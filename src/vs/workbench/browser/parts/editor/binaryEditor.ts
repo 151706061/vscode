@@ -5,23 +5,24 @@
 
 'use strict';
 
-import 'vs/css!./media/binaryeditor';
 import nls = require('vs/nls');
-import DOM = require('vs/base/browser/dom');
 import {TPromise} from 'vs/base/common/winjs.base';
 import {Dimension, Builder, $} from 'vs/base/browser/builder';
 import {ResourceViewer} from 'vs/base/browser/ui/resourceviewer/resourceViewer';
 import {EditorModel, EditorInput, EditorOptions} from 'vs/workbench/common/editor';
 import {BaseEditor} from 'vs/workbench/browser/parts/editor/baseEditor';
-import {BinaryResourceEditorModel} from 'vs/workbench/browser/parts/editor/resourceEditorModel';
+import {BinaryEditorModel} from 'vs/workbench/common/editor/binaryEditorModel';
 import {IWorkbenchEditorService} from 'vs/workbench/services/editor/common/editorService';
 import {ITelemetryService} from 'vs/platform/telemetry/common/telemetry';
+import {DomScrollableElement} from 'vs/base/browser/ui/scrollbar/scrollableElement';
+import {ScrollbarVisibility} from 'vs/base/common/scrollable';
 
 /*
  * This class is only intended to be subclassed and not instantiated.
  */
 export abstract class BaseBinaryResourceEditor extends BaseEditor {
 	private binaryContainer: Builder;
+	private scrollbar: DomScrollableElement;
 
 	constructor(id: string, telemetryService: ITelemetryService, private _editorService: IWorkbenchEditorService) {
 		super(id, telemetryService);
@@ -39,10 +40,13 @@ export abstract class BaseBinaryResourceEditor extends BaseEditor {
 
 		// Container for Binary
 		let binaryContainerElement = document.createElement('div');
-		binaryContainerElement.className = 'binary-container monaco-editor-background'; // Inherit the background color from selected theme'
+		binaryContainerElement.className = 'binary-container';
 		this.binaryContainer = $(binaryContainerElement);
-		this.binaryContainer.tabindex(0); // enable focus support
-		parent.getHTMLElement().appendChild(this.binaryContainer.getHTMLElement());
+		this.binaryContainer.tabindex(0); // enable focus support from the editor part (do not remove)
+
+		// Custom Scrollbars
+		this.scrollbar = new DomScrollableElement(binaryContainerElement, { canUseTranslate3d: false, horizontal: ScrollbarVisibility.Auto, vertical: ScrollbarVisibility.Auto });
+		parent.getHTMLElement().appendChild(this.scrollbar.getDomNode());
 	}
 
 	public setInput(input: EditorInput, options: EditorOptions): TPromise<void> {
@@ -61,8 +65,8 @@ export abstract class BaseBinaryResourceEditor extends BaseEditor {
 		return this._editorService.resolveEditorModel(input, true /* Reload */).then((resolvedModel: EditorModel) => {
 
 			// Assert Model instance
-			if (!(resolvedModel instanceof BinaryResourceEditorModel)) {
-				return TPromise.wrapError<void>('Invalid editor input. Binary resource editor requires a model instance of BinaryResourceEditorModel.');
+			if (!(resolvedModel instanceof BinaryEditorModel)) {
+				return TPromise.wrapError<void>('Invalid editor input. Binary resource editor requires a model instance of BinaryEditorModel.');
 			}
 
 			// Assert that the current input is still the one we expect. This prevents a race condition when loading takes long and another input was set meanwhile
@@ -71,8 +75,8 @@ export abstract class BaseBinaryResourceEditor extends BaseEditor {
 			}
 
 			// Render Input
-			let binaryResourceModel = <BinaryResourceEditorModel>resolvedModel;
-			ResourceViewer.show(binaryResourceModel.getName(), binaryResourceModel.getUrl(), this.binaryContainer);
+			let model = <BinaryEditorModel>resolvedModel;
+			ResourceViewer.show({ name: model.getName(), resource: model.getResource(), size: model.getSize() }, this.binaryContainer, this.scrollbar);
 
 			return TPromise.as<void>(null);
 		});
@@ -90,6 +94,7 @@ export abstract class BaseBinaryResourceEditor extends BaseEditor {
 
 		// Pass on to Binary Container
 		this.binaryContainer.size(dimension.width, dimension.height);
+		this.scrollbar.scanDomNode();
 	}
 
 	public focus(): void {
@@ -100,13 +105,14 @@ export abstract class BaseBinaryResourceEditor extends BaseEditor {
 
 		// Destroy Container
 		this.binaryContainer.destroy();
+		this.scrollbar.dispose();
 
 		super.dispose();
 	}
 }
 
 /**
- * An implementation of editor for binary files like images or videos leveraging the ResourceEditorInput.
+ * An implementation of editor for binary files like images or videos.
  */
 export class BinaryResourceEditor extends BaseBinaryResourceEditor {
 

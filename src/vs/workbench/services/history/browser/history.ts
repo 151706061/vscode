@@ -2,25 +2,30 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+
 'use strict';
 
 import errors = require('vs/base/common/errors');
 import platform = require('vs/base/common/platform');
 import nls = require('vs/nls');
-import types = require('vs/base/common/types');
+import product from 'vs/platform/product';
 import {EventType} from 'vs/base/common/events';
-import {IEditorSelection} from 'vs/editor/common/editorCommon';
-import {BaseEditor} from 'vs/workbench/browser/parts/editor/baseEditor';
-import {TextEditorOptions, EditorInput} from 'vs/workbench/common/editor';
+import {IEditor as IBaseEditor} from 'vs/platform/editor/common/editor';
+import {EditorInput, IGroupEvent, IEditorRegistry, Extensions} from 'vs/workbench/common/editor';
 import {BaseTextEditor} from 'vs/workbench/browser/parts/editor/textEditor';
-import {EditorEvent, TextEditorSelectionEvent, EventType as WorkbenchEventType, EditorInputEvent} from 'vs/workbench/browser/events';
 import {IWorkbenchEditorService} from 'vs/workbench/services/editor/common/editorService';
-import {IQuickOpenService} from 'vs/workbench/services/quickopen/browser/quickOpenService';
 import {IHistoryService} from 'vs/workbench/services/history/common/history';
 import {Selection} from 'vs/editor/common/core/selection';
-import {Position, IEditorInput} from 'vs/platform/editor/common/editor';
+import {IEditorInput, ITextEditorOptions} from 'vs/platform/editor/common/editor';
 import {IEventService} from 'vs/platform/event/common/event';
 import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
+import {IDisposable, dispose} from 'vs/base/common/lifecycle';
+import {IStorageService, StorageScope} from 'vs/platform/storage/common/storage';
+import {ILifecycleService} from 'vs/platform/lifecycle/common/lifecycle';
+import {Registry} from 'vs/platform/platform';
+import {IInstantiationService} from 'vs/platform/instantiation/common/instantiation';
+import {IEditorGroupService} from 'vs/workbench/services/group/common/groupService';
+import {IEnvironmentService} from 'vs/platform/environment/common/environment';
 
 /**
  * Stores the selection & view state of an editor and allows to compare it to other selection states.
@@ -29,15 +34,14 @@ export class EditorState {
 
 	private static EDITOR_SELECTION_THRESHOLD = 5; // number of lines to move in editor to justify for new state
 
-	constructor(private _editorInput: IEditorInput, private _selection: IEditorSelection) {
-		//
+	constructor(private _editorInput: IEditorInput, private _selection: Selection) {
 	}
 
 	public get editorInput(): IEditorInput {
 		return this._editorInput;
 	}
 
-	public get selection(): IEditorSelection {
+	public get selection(): Selection {
 		return this._selection;
 	}
 
@@ -52,8 +56,8 @@ export class EditorState {
 			return true;
 		}
 
-		let liftedSelection = Selection.liftSelection(this._selection);
-		let liftedOtherSelection = Selection.liftSelection(other._selection);
+		const liftedSelection = Selection.liftSelection(this._selection);
+		const liftedOtherSelection = Selection.liftSelection(other._selection);
 
 		if (Math.abs(liftedSelection.getStartPosition().lineNumber - liftedOtherSelection.getStartPosition().lineNumber) < EditorState.EDITOR_SELECTION_THRESHOLD) {
 			// ignore selection changes in the range of EditorState.EDITOR_SELECTION_THRESHOLD lines
@@ -64,76 +68,73 @@ export class EditorState {
 	}
 }
 
+interface ISerializedEditorInput {
+	id: string;
+	value: string;
+}
+
 interface IInputWithPath {
 	getPath?: () => string;
 }
 
 export abstract class BaseHistoryService {
-	protected toUnbind: { (): void; }[];
+	protected toUnbind: IDisposable[];
+
+	private activeEditorListeners: IDisposable[];
 
 	constructor(
 		private eventService: IEventService,
+		protected editorGroupService: IEditorGroupService,
 		protected editorService: IWorkbenchEditorService,
-		protected contextService: IWorkspaceContextService
+		protected contextService: IWorkspaceContextService,
+		private environmentService: IEnvironmentService
 	) {
 		this.toUnbind = [];
+		this.activeEditorListeners = [];
 
 		// Window Title
 		window.document.title = this.getWindowTitle(null);
 
 		// Editor Input Changes
-		this.toUnbind.push(this.eventService.addListener(WorkbenchEventType.EDITOR_INPUT_CHANGED, (e: EditorEvent) => this.onEditorInputChanged(e)));
-
-		// Editor Input State Changes
-		this.toUnbind.push(this.eventService.addListener(WorkbenchEventType.EDITOR_INPUT_STATE_CHANGED, (e: EditorInputEvent) => this.onEditorInputStateChanged(e.editorInput)));
-
-		// Text Editor Selection Changes
-		this.toUnbind.push(this.eventService.addListener(WorkbenchEventType.TEXT_EDITOR_SELECTION_CHANGED, (event: TextEditorSelectionEvent) => this.onTextEditorSelectionChanged(event)));
+		this.toUnbind.push(this.editorGroupService.onEditorsChanged(() => this.onEditorsChanged()));
 	}
 
-	private onEditorInputStateChanged(input: IEditorInput): void {
+	private onEditorsChanged(): void {
 
-		// If an active editor is set, but is different from the one from the event, prevent update because the editor is not active.
-		let activeEditor = this.editorService.getActiveEditor();
-		if (activeEditor && !input.matches(activeEditor.input)) {
-			return;
+		// Dispose old listeners
+		dispose(this.activeEditorListeners);
+		this.activeEditorListeners = [];
+
+		const activeEditor = this.editorService.getActiveEditor();
+		const activeInput = activeEditor ? activeEditor.input : void 0;
+
+		// Propagate to history
+		this.onEditorEvent(activeEditor);
+
+		// Apply listener for dirty changes
+		if (activeInput instanceof EditorInput) {
+			this.activeEditorListeners.push(activeInput.onDidChangeDirty(() => {
+				this.updateWindowTitle(activeInput); // Calculate New Window Title when dirty state changes
+			}));
 		}
 
-		// Calculate New Window Title
-		this.updateWindowTitle(input);
-	}
-
-	private onTextEditorSelectionChanged(event: TextEditorSelectionEvent): void {
-
-		// If an active editor is set, but is different from the one from the event, prevent update because the editor is not active.
-		let editor = event.editor;
-		let activeEditor = this.editorService.getActiveEditor();
-		if (activeEditor && editor && activeEditor !== editor) {
-			return;
+		// Apply listener for selection changes if this is a text editor
+		if (activeEditor instanceof BaseTextEditor) {
+			const control = activeEditor.getControl();
+			this.activeEditorListeners.push(control.onDidChangeCursorPosition(event => {
+				this.handleEditorSelectionChangeEvent(activeEditor);
+			}));
 		}
-
-		// Delegate to implementors
-		this.handleEditorSelectionChangeEvent(event.editor);
 	}
 
-	private onEditorInputChanged(event: EditorEvent): void {
-		this.onEditorEvent(event.editor);
-	}
-
-	private onEditorEvent(editor: BaseEditor): void {
-		let input = editor ? editor.input : null;
-
-		// If an active editor is set, but is different from the one from the event, prevent update because the editor is not active.
-		let activeEditor = this.editorService.getActiveEditor();
-		if (activeEditor && editor && activeEditor !== editor) {
-			return;
-		}
+	private onEditorEvent(editor: IBaseEditor): void {
+		const input = editor ? editor.input : null;
 
 		// Calculate New Window Title
 		this.updateWindowTitle(input);
 
 		// Delegate to implementors
-		this.handleEditorInputChangeEvent(editor);
+		this.handleActiveEditorChange(editor);
 	}
 
 	private updateWindowTitle(input?: IEditorInput): void {
@@ -147,15 +148,15 @@ export abstract class BaseHistoryService {
 		window.document.title = windowTitle;
 	}
 
-	protected abstract handleEditorSelectionChangeEvent(editor?: BaseEditor): void;
+	protected abstract handleEditorSelectionChangeEvent(editor?: IBaseEditor): void;
 
-	protected abstract handleEditorInputChangeEvent(editor?: BaseEditor): void;
+	protected abstract handleActiveEditorChange(editor?: IBaseEditor): void;
 
 	protected getWindowTitle(input?: IEditorInput): string {
-		let title = this.doGetWindowTitle(input);
+		const title = this.doGetWindowTitle(input);
 
-		// Plugin Development Host gets a special title to identify itself
-		if (this.contextService.getConfiguration().env.pluginDevelopmentPath) {
+		// Extension Development Host gets a special title to identify itself
+		if (this.environmentService.extensionDevelopmentPath) {
 			return nls.localize('devExtensionWindowTitle', "[Extension Development Host] - {0}", title);
 		}
 
@@ -163,19 +164,18 @@ export abstract class BaseHistoryService {
 	}
 
 	private doGetWindowTitle(input?: IEditorInput): string {
-		const appName = this.contextService.getConfiguration().env.appName;
+		const appName = product.nameLong;
 
 		let prefix = input && input.getName();
 		if (prefix && input) {
-			let status = (<EditorInput>input).getStatus();
-			if (status && status.decoration && !platform.isMacintosh /* Mac has its own decoration in window */) {
-				prefix = nls.localize('prefixDecoration', "{0} {1}", status.decoration, prefix);
+			if ((<EditorInput>input).isDirty() && !platform.isMacintosh /* Mac has its own decoration in window */) {
+				prefix = nls.localize('prefixDecoration', "\u25cf {0}", prefix);
 			}
 		}
 
-		let workspace = this.contextService.getWorkspace();
+		const workspace = this.contextService.getWorkspace();
 		if (workspace) {
-			let wsName = workspace.name;
+			const wsName = workspace.name;
 
 			if (prefix) {
 				if (platform.isMacintosh) {
@@ -203,69 +203,90 @@ export abstract class BaseHistoryService {
 		return appName;
 	}
 
-	protected findVisibleEditorPosition(input: IEditorInput): Position {
-		let activeEditor = this.editorService.getActiveEditor();
-		if (activeEditor && input.matches(activeEditor.input)) {
-			return activeEditor.position;
-		}
-
-		let editors = this.editorService.getVisibleEditors();
-		for (let i = 0; i < editors.length; i++) {
-			let editor = editors[i];
-			if (editor !== activeEditor && input.matches(editor.input)) {
-				return editor.position;
-			}
-		}
-
-		return null;
-	}
-
 	public dispose(): void {
-		while (this.toUnbind.length) {
-			this.toUnbind.pop()();
-		}
+		this.toUnbind = dispose(this.toUnbind);
 	}
 }
 
 interface IStackEntry {
 	input: IEditorInput;
-	options?: TextEditorOptions;
+	options?: ITextEditorOptions;
 }
 
 export class HistoryService extends BaseHistoryService implements IHistoryService {
-	public serviceId = IHistoryService;
-	private _stack: IStackEntry[];
+
+	public _serviceBrand: any;
+
+	private static STORAGE_KEY = 'history.entries';
+	private static MAX_HISTORY_ITEMS = 200;
+	private static MAX_STACK_ITEMS = 20;
+	private static MAX_RECENTLY_CLOSED_EDITORS = 20;
+
+	private stack: IStackEntry[];
 	private index: number;
-	private blockEditorEvent: boolean;
+	private blockStackChanges: boolean;
 	private currentFileEditorState: EditorState;
-	private quickOpenService: IQuickOpenService;
+
+	private history: IEditorInput[];
+	private recentlyClosed: IEditorInput[];
+	private loaded: boolean;
+	private registry: IEditorRegistry;
 
 	constructor(
-		eventService: IEventService,
-		editorService: IWorkbenchEditorService,
-		contextService: IWorkspaceContextService,
-		quickOpenService: IQuickOpenService
+		@IEventService eventService: IEventService,
+		@IWorkbenchEditorService editorService: IWorkbenchEditorService,
+		@IEditorGroupService editorGroupService: IEditorGroupService,
+		@IEnvironmentService environmentService: IEnvironmentService,
+		@IWorkspaceContextService contextService: IWorkspaceContextService,
+		@IStorageService private storageService: IStorageService,
+		@ILifecycleService private lifecycleService: ILifecycleService,
+		@IInstantiationService private instantiationService: IInstantiationService
 	) {
-		super(eventService, editorService, contextService);
-
-		this.quickOpenService = quickOpenService;
+		super(eventService, editorGroupService, editorService, contextService, environmentService);
 
 		this.index = -1;
+		this.stack = [];
+		this.recentlyClosed = [];
+		this.loaded = false;
+		this.registry = Registry.as<IEditorRegistry>(Extensions.Editors);
+
+		this.registerListeners();
 	}
 
-	private get stack(): IStackEntry[] {
+	private registerListeners(): void {
+		this.toUnbind.push(this.lifecycleService.onShutdown(() => this.save()));
+		this.toUnbind.push(this.editorGroupService.onEditorOpenFail(editor => this.remove(editor)));
+		this.toUnbind.push(this.editorGroupService.getStacksModel().onEditorClosed(event => this.onEditorClosed(event)));
+	}
 
-		// Seed our stack from the persisted editor history
-		if (!this._stack) {
-			this._stack = [];
-			let history = this.quickOpenService.getEditorHistory();
+	private onEditorClosed(event: IGroupEvent): void {
 
-			for (let i = history.length - 1; i >= 0; i--) {
-				this.addToStack(history[i]);
+		// Track closing of pinned editor to support to reopen closed editors
+		if (event.pinned) {
+			const editor = this.restoreInput(event.editor); // closed editors are always disposed so we need to restore
+			if (editor) {
+
+				// Remove all inputs matching and add as last recently closed
+				this.removeFromRecentlyClosed(editor);
+				this.recentlyClosed.push(editor);
+
+				// Bounding
+				if (this.recentlyClosed.length > HistoryService.MAX_RECENTLY_CLOSED_EDITORS) {
+					this.recentlyClosed.shift();
+				}
+
+				// Restore on dispose
+				editor.addOneTimeDisposableListener(EventType.DISPOSE, () => {
+					this.restoreInRecentlyClosed(editor);
+				});
 			}
 		}
+	}
 
-		return this._stack;
+	public popLastClosedEditor(): IEditorInput {
+		this.ensureLoaded();
+
+		return this.recentlyClosed.pop();
 	}
 
 	public forward(): void {
@@ -282,28 +303,117 @@ export class HistoryService extends BaseHistoryService implements IHistoryServic
 		}
 	}
 
-	private navigate(): void {
-		let state = this.stack[this.index];
+	public clear(): void {
+		this.ensureLoaded();
 
-		this.blockEditorEvent = true;
-		this.editorService.openEditor(state.input, state.options, this.findVisibleEditorPosition(state.input)).done(() => {
-			this.blockEditorEvent = false;
+		this.index = -1;
+		this.stack.splice(0);
+		this.history = [];
+		this.recentlyClosed = [];
+	}
+
+	private navigate(): void {
+		const state = this.stack[this.index];
+
+		let options = state.options;
+		if (options) {
+			options.revealIfVisible = true;
+		} else {
+			options = { revealIfVisible: true };
+		}
+
+		this.blockStackChanges = true;
+		this.editorService.openEditor(state.input, options).done(() => {
+			this.blockStackChanges = false;
 		}, (error) => {
-			this.blockEditorEvent = false;
+			this.blockStackChanges = false;
 			errors.onUnexpectedError(error);
 		});
 	}
 
-	protected handleEditorSelectionChangeEvent(editor?: BaseEditor): void {
-		this.handleEditorEvent(editor, true);
+	protected handleEditorSelectionChangeEvent(editor?: IBaseEditor): void {
+		this.handleEditorEventInStack(editor, true);
 	}
 
-	protected handleEditorInputChangeEvent(editor?: BaseEditor): void {
-		this.handleEditorEvent(editor, false);
+	protected handleActiveEditorChange(editor?: IBaseEditor): void {
+		this.handleEditorEventInHistory(editor);
+		this.handleEditorEventInStack(editor, false);
 	}
 
-	private handleEditorEvent(editor: BaseEditor, storeSelection: boolean): void {
-		if (this.blockEditorEvent) {
+	private handleEditorEventInHistory(editor?: IBaseEditor): void {
+		const input = editor ? editor.input : void 0;
+
+		// Ensure we have at least a name to show
+		if (!input || !input.getName()) {
+			return;
+		}
+
+		this.ensureLoaded();
+
+		// Remove any existing entry and add to the beginning
+		this.removeFromHistory(input);
+		this.history.unshift(input);
+
+		// Respect max entries setting
+		if (this.history.length > HistoryService.MAX_HISTORY_ITEMS) {
+			this.history.pop();
+		}
+
+		// Restore on dispose
+		input.addOneTimeDisposableListener(EventType.DISPOSE, () => {
+			this.restoreInHistory(input);
+		});
+	}
+
+	private restoreInHistory(input: IEditorInput): void {
+		const index = this.indexOf(input);
+		if (index < 0) {
+			return;
+		}
+
+		// Using the factory we try to recreate the input
+		const restoredInput = this.restoreInput(input);
+		if (restoredInput) {
+			this.history[index] = restoredInput;
+		}
+
+		// Factory failed, just remove entry then
+		else {
+			this.removeFromHistory(input, index);
+		}
+	}
+
+	public remove(input: IEditorInput): void {
+		this.removeFromHistory(input);
+		this.removeFromStack(input);
+		setTimeout(() => this.removeFromRecentlyClosed(input)); // race condition with editor close and dispose
+	}
+
+	private removeFromHistory(input: IEditorInput, index?: number): void {
+		this.ensureLoaded();
+
+		if (typeof index !== 'number') {
+			index = this.indexOf(input);
+		}
+
+		if (index >= 0) {
+			this.history.splice(index, 1);
+		}
+	}
+
+	private indexOf(input: IEditorInput): number {
+		for (let i = 0; i < this.history.length; i++) {
+			const entry = this.history[i];
+			if (entry.matches(input)) {
+				return i;
+			}
+		}
+
+		return -1;
+	}
+
+	private handleEditorEventInStack(editor: IBaseEditor, storeSelection: boolean): void {
+		if (this.blockStackChanges) {
 			return; // while we open an editor due to a navigation, we do not want to update our stack
 		}
 
@@ -321,22 +431,24 @@ export class HistoryService extends BaseHistoryService implements IHistoryServic
 	}
 
 	private handleTextEditorEvent(editor: BaseTextEditor, storeSelection: boolean): void {
-		let stateCandidate = new EditorState(editor.input, editor.getSelection());
+		const stateCandidate = new EditorState(editor.input, editor.getSelection());
 		if (!this.currentFileEditorState || this.currentFileEditorState.justifiesNewPushState(stateCandidate)) {
 			this.currentFileEditorState = stateCandidate;
 
-			let options: TextEditorOptions;
+			let options: ITextEditorOptions;
 			if (storeSelection) {
-				options = new TextEditorOptions();
-				options.selection(editor.getSelection().startLineNumber, editor.getSelection().startColumn);
+				const selection = editor.getSelection();
+				options = {
+					selection: { startLineNumber: selection.startLineNumber, startColumn: selection.startColumn }
+				};
 			}
 
 			this.addToStack(editor.input, options);
 		}
 	}
 
-	private handleNonTextEditorEvent(editor: BaseEditor): void {
-		let currentStack = this.stack[this.index];
+	private handleNonTextEditorEvent(editor: IBaseEditor): void {
+		const currentStack = this.stack[this.index];
 		if (currentStack && currentStack.input.matches(editor.input)) {
 			return; // do not push same editor input again
 		}
@@ -344,22 +456,27 @@ export class HistoryService extends BaseHistoryService implements IHistoryServic
 		this.addToStack(editor.input);
 	}
 
-	private addToStack(input: IEditorInput, options?: TextEditorOptions): void {
+	private addToStack(input: IEditorInput, options?: ITextEditorOptions): void {
 
 		// Overwrite an entry in the stack if we have a matching input that comes
 		// with editor options to indicate that this entry is more specific.
 		let replace = false;
 		if (this.stack[this.index]) {
-			let currentEntry = this.stack[this.index];
+			const currentEntry = this.stack[this.index];
 			if (currentEntry.input.matches(input) && !currentEntry.options) {
 				replace = true;
 			}
 		}
 
-		let entry = {
+		const entry = {
 			input: input,
 			options: options
 		};
+
+		// If we are not at the end of history, we remove anything after
+		if (this.stack.length > this.index + 1) {
+			this.stack = this.stack.slice(0, this.index + 1);
+		}
 
 		// Replace at current position
 		if (replace) {
@@ -370,18 +487,149 @@ export class HistoryService extends BaseHistoryService implements IHistoryServic
 		else {
 			this.index++;
 			this.stack.splice(this.index, 0, entry);
+
+			// Check for limit
+			if (this.stack.length > HistoryService.MAX_STACK_ITEMS) {
+				this.stack.shift(); // remove first and dispose
+				if (this.index > 0) {
+					this.index--;
+				}
+			}
 		}
 
-		// Take out on dispose
-		input.addOneTimeListener(EventType.DISPOSE, () => {
-			this.stack.forEach((e, i) => {
-				if (e.input.matches(input)) {
+		// Restore on dispose
+		input.addOneTimeDisposableListener(EventType.DISPOSE, () => {
+			this.restoreInStack(input);
+		});
+	}
+
+	private restoreInStack(input: IEditorInput): void {
+		let restoredInput: EditorInput;
+		let restored = false;
+
+		this.stack.forEach((e, i) => {
+			if (e.input.matches(input)) {
+				if (!restored) {
+					restoredInput = this.restoreInput(input);
+					restored = true;
+				}
+
+				if (restoredInput) {
+					this.stack[i].input = restoredInput;
+				} else {
 					this.stack.splice(i, 1);
 					if (this.index >= i) {
 						this.index--; // reduce index if the element is before index
 					}
 				}
-			});
+			}
 		});
+	}
+
+	private restoreInRecentlyClosed(input: IEditorInput): void {
+		let restoredInput: EditorInput;
+		let restored = false;
+
+		this.recentlyClosed.forEach((e, i) => {
+			if (e.matches(input)) {
+				if (!restored) {
+					restoredInput = this.restoreInput(input);
+					restored = true;
+				}
+
+				if (restoredInput) {
+					this.recentlyClosed[i] = restoredInput;
+				} else {
+					this.stack.splice(i, 1);
+				}
+			}
+		});
+	}
+
+	private restoreInput(input: IEditorInput): EditorInput {
+		if (input instanceof EditorInput) {
+			const factory = this.registry.getEditorInputFactory(input.getTypeId());
+			if (factory) {
+				const inputRaw = factory.serialize(input);
+				if (inputRaw) {
+					return factory.deserialize(this.instantiationService, inputRaw);
+				}
+			}
+		}
+
+		return null;
+	}
+
+	private removeFromStack(input: IEditorInput): void {
+		this.stack.forEach((e, i) => {
+			if (e.input.matches(input)) {
+				this.stack.splice(i, 1);
+				if (this.index >= i) {
+					this.index--; // reduce index if the element is before index
+				}
+			}
+		});
+	}
+
+	private removeFromRecentlyClosed(input: IEditorInput): void {
+		this.recentlyClosed.forEach((e, i) => {
+			if (e.matches(input)) {
+				this.recentlyClosed.splice(i, 1);
+			}
+		});
+	}
+
+	public getHistory(): IEditorInput[] {
+		this.ensureLoaded();
+
+		return this.history.slice(0);
+	}
+
+	private ensureLoaded(): void {
+		if (!this.loaded) {
+			this.load();
+		}
+
+		this.loaded = true;
+	}
+
+	private save(): void {
+		if (!this.history) {
+			return; // nothing to save because history was not used
+		}
+
+		const entries: ISerializedEditorInput[] = this.history.map((input: EditorInput) => {
+			const factory = this.registry.getEditorInputFactory(input.getTypeId());
+			if (factory) {
+				const value = factory.serialize(input);
+				if (typeof value === 'string') {
+					return {
+						id: input.getTypeId(),
+						value: value
+					};
+				}
+			}
+
+			return void 0;
+		}).filter(serialized => !!serialized);
+
+		this.storageService.store(HistoryService.STORAGE_KEY, JSON.stringify(entries), StorageScope.WORKSPACE);
+	}
+
+	private load(): void {
+		let entries: ISerializedEditorInput[] = [];
+		const entriesRaw = this.storageService.get(HistoryService.STORAGE_KEY, StorageScope.WORKSPACE);
+		if (entriesRaw) {
+			entries = JSON.parse(entriesRaw);
+		}
+
+		this.history = entries.map(entry => {
+			const factory = this.registry.getEditorInputFactory(entry.id);
+			if (factory && typeof entry.value === 'string') {
+				return factory.deserialize(this.instantiationService, entry.value);
+			}
+
+			return void 0;
+		}).filter(input => !!input);
 	}
 }

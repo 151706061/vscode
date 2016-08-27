@@ -6,9 +6,8 @@
 'use strict';
 
 import 'vs/css!./media/search.contribution';
-import env = require('vs/base/common/platform');
 import {Registry} from 'vs/platform/platform';
-import {IViewletRegistry, Extensions as ViewletExtensions, ViewletDescriptor, ToggleViewletAction} from 'vs/workbench/browser/viewlet';
+import {ViewletRegistry, Extensions as ViewletExtensions, ViewletDescriptor} from 'vs/workbench/browser/viewlet';
 import {IConfigurationRegistry, Extensions as ConfigurationExtensions} from 'vs/platform/configuration/common/configurationRegistry';
 import nls = require('vs/nls');
 import {IAction} from 'vs/base/common/actions';
@@ -16,45 +15,37 @@ import {asFileResource} from 'vs/workbench/parts/files/common/files';
 import {SyncActionDescriptor, DeferredAction} from 'vs/platform/actions/common/actions';
 import {Separator} from 'vs/base/browser/ui/actionbar/actionbar';
 import {Scope, IActionBarRegistry, Extensions as ActionBarExtensions, ActionBarContributor} from 'vs/workbench/browser/actionBarRegistry';
-import {IWorkbenchActionRegistry, Extensions as ActionExtensions} from 'vs/workbench/browser/actionRegistry';
-import {QuickOpenHandlerDescriptor, IQuickOpenRegistry, Extensions as QuickOpenExtensions} from 'vs/workbench/browser/quickopen';
-import {QuickOpenAction} from 'vs/workbench/browser/actions/quickOpenAction';
+import {IWorkbenchActionRegistry, Extensions as ActionExtensions} from 'vs/workbench/common/actionRegistry';
+import {QuickOpenHandlerDescriptor, IQuickOpenRegistry, Extensions as QuickOpenExtensions, QuickOpenAction} from 'vs/workbench/browser/quickopen';
 import {KeybindingsRegistry} from 'vs/platform/keybinding/common/keybindingsRegistry';
 import {IInstantiationService} from 'vs/platform/instantiation/common/instantiation';
 import {AsyncDescriptor} from 'vs/platform/instantiation/common/descriptors';
 import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
-import {IKeybindings} from 'vs/platform/keybinding/common/keybindingService';
-import {IQuickOpenService} from 'vs/workbench/services/quickopen/browser/quickOpenService';
+import {IKeybindings} from 'vs/platform/keybinding/common/keybinding';
+import {IQuickOpenService} from 'vs/workbench/services/quickopen/common/quickOpenService';
 import {IViewletService} from 'vs/workbench/services/viewlet/common/viewletService';
-import {IWorkbenchEditorService} from 'vs/workbench/services/editor/common/editorService';
 import {KeyMod, KeyCode} from 'vs/base/common/keyCodes';
+import {OpenSearchViewletAction, ReplaceInFilesAction} from 'vs/workbench/parts/search/browser/searchActions';
+import {VIEWLET_ID, SearchViewletVisible} from 'vs/workbench/parts/search/common/constants';
+import { registerContributions as replaceContributions } from 'vs/workbench/parts/search/browser/replaceContributions';
+import { registerContributions as searchWidgetContributions } from 'vs/workbench/parts/search/browser/searchWidget';
 
-export const VIEWLET_ID = 'workbench.view.search';
+replaceContributions();
+searchWidgetContributions();
 
-KeybindingsRegistry.registerCommandDesc({
+KeybindingsRegistry.registerCommandAndKeybindingRule({
 	id: 'workbench.action.search.toggleQueryDetails',
 	weight: KeybindingsRegistry.WEIGHT.workbenchContrib(),
-	context: [{ key: 'searchViewletVisible' }],
+	when: SearchViewletVisible,
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_J,
-	handler: ctx => {
-		let viewletService = <IViewletService>ctx['viewletService'];
+	handler: accessor => {
+		let viewletService = accessor.get(IViewletService);
 		viewletService.openViewlet(VIEWLET_ID, true)
 			.then(viewlet => (<any>viewlet).toggleFileTypes());
 	}
 });
 
-
-class OpenSearchViewletAction extends ToggleViewletAction {
-	public static ID = VIEWLET_ID;
-	public static LABEL = nls.localize('showSearchViewlet', "Show Search");
-
-	constructor(id: string, label: string, @IViewletService viewletService: IViewletService, @IWorkbenchEditorService editorService: IWorkbenchEditorService) {
-		super(id, label, VIEWLET_ID, viewletService, editorService);
-	}
-}
-
 class ExplorerViewerActionContributor extends ActionBarContributor {
-
 	private _instantiationService: IInstantiationService;
 	private _contextService: IWorkspaceContextService;
 
@@ -85,7 +76,7 @@ class ExplorerViewerActionContributor extends ActionBarContributor {
 
 			let action = new DeferredAction(
 				this._instantiationService,
-				new AsyncDescriptor('vs/workbench/parts/search/browser/searchViewlet', 'FindInFolderAction', fileResource.resource),
+				new AsyncDescriptor('vs/workbench/parts/search/browser/searchActions', 'FindInFolderAction', fileResource.resource),
 				'workbench.search.action.findInFolder',
 				nls.localize('findInFolder', "Find in Folder")
 			);
@@ -111,7 +102,7 @@ class ShowAllSymbolsAction extends QuickOpenAction {
 }
 
 // Register Viewlet
-(<IViewletRegistry>Registry.as(ViewletExtensions.Viewlets)).registerViewlet(new ViewletDescriptor(
+(<ViewletRegistry>Registry.as(ViewletExtensions.Viewlets)).registerViewlet(new ViewletDescriptor(
 	'vs/workbench/parts/search/browser/searchViewlet',
 	'SearchViewlet',
 	VIEWLET_ID,
@@ -127,7 +118,15 @@ const openSearchViewletKb: IKeybindings = {
 
 (<IWorkbenchActionRegistry>Registry.as(ActionExtensions.WorkbenchActions)).registerWorkbenchAction(
 	new SyncActionDescriptor(OpenSearchViewletAction, OpenSearchViewletAction.ID, OpenSearchViewletAction.LABEL, openSearchViewletKb),
+	'View: Show Search',
 	nls.localize('view', "View")
+);
+
+(<IWorkbenchActionRegistry>Registry.as(ActionExtensions.WorkbenchActions)).registerWorkbenchAction(
+	new SyncActionDescriptor(ReplaceInFilesAction, ReplaceInFilesAction.ID, ReplaceInFilesAction.LABEL, {
+		primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_H
+	}),
+	'Replace in Files'
 );
 
 // Contribute to Explorer Viewer
@@ -140,22 +139,42 @@ actionBarRegistry.registerActionBarContributor(Scope.VIEWER, ExplorerViewerActio
 		'vs/workbench/parts/search/browser/openAnythingHandler',
 		'OpenAnythingHandler',
 		'',
-		env.isMacintosh ? nls.localize('openAnythingHandlerDescriptionMac', "Open Files and Symbols by Name") : nls.localize('openAnythingHandlerDescriptionWin', "Open Files and Symbols by Name")
+		nls.localize('openAnythingHandlerDescription', "Open Files and Global Symbols by Name")
 	)
 );
+
+(<IQuickOpenRegistry>Registry.as(QuickOpenExtensions.Quickopen)).registerQuickOpenHandler(
+	new QuickOpenHandlerDescriptor(
+		'vs/workbench/parts/search/browser/openAnythingHandler',
+		'OpenSymbolHandler',
+		ALL_SYMBOLS_PREFIX,
+		[
+			{
+				prefix: ALL_SYMBOLS_PREFIX,
+				needsEditor: false,
+				description: nls.localize('openSymbolDescriptionNormal', "Open Any Symbol By Name")
+			}
+		]
+	)
+);
+
+// Actions
+const registry = <IWorkbenchActionRegistry>Registry.as(ActionExtensions.WorkbenchActions);
+registry.registerWorkbenchAction(new SyncActionDescriptor(ShowAllSymbolsAction, ACTION_ID, ACTION_LABEL, {
+	primary: KeyMod.CtrlCmd | KeyCode.KEY_T
+}), 'Show All Symbols');
 
 // Configuration
 const configurationRegistry = <IConfigurationRegistry>Registry.as(ConfigurationExtensions.Configuration);
 configurationRegistry.registerConfiguration({
 	'id': 'search',
-	'order': 10,
-	'title': nls.localize('searchConfigurationTitle', "Search configuration"),
+	'order': 13,
+	'title': nls.localize('searchConfigurationTitle', "Search"),
 	'type': 'object',
 	'properties': {
 		'search.exclude': {
-			'id': 'glob-pattern',
 			'type': 'object',
-			'description': nls.localize('exclude', "Configure glob patterns for excluding files and folders in searches. Inherits all glob patterns from the file.exclude setting."),
+			'description': nls.localize('exclude', "Configure glob patterns for excluding files and folders in searches. Inherits all glob patterns from the files.exclude setting."),
 			'default': { '**/node_modules': true, '**/bower_components': true },
 			'additionalProperties': {
 				'anyOf': [
@@ -179,23 +198,3 @@ configurationRegistry.registerConfiguration({
 		}
 	}
 });
-
-const registry = <IWorkbenchActionRegistry>Registry.as(ActionExtensions.WorkbenchActions);
-registry.registerWorkbenchAction(new SyncActionDescriptor(ShowAllSymbolsAction, ACTION_ID, ACTION_LABEL, {
-	primary: KeyMod.CtrlCmd | KeyCode.KEY_T
-}));
-
-(<IQuickOpenRegistry>Registry.as(QuickOpenExtensions.Quickopen)).registerQuickOpenHandler(
-	new QuickOpenHandlerDescriptor(
-		'vs/workbench/parts/search/browser/openAnythingHandler',
-		'OpenSymbolHandler',
-		ALL_SYMBOLS_PREFIX,
-		[
-			{
-				prefix: ALL_SYMBOLS_PREFIX,
-				needsEditor: false,
-				description: env.isMacintosh ? nls.localize('openSymbolDescriptionNormalMac', "Open Symbol By Name") : nls.localize('openSymbolDescriptionNormalWin', "Open Symbol By Name")
-			}
-		]
-	)
-);

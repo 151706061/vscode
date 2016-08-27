@@ -1,10 +1,11 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
- 'use strict';
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
-import { workspace, DocumentSymbolProvider, SymbolInformation, SymbolKind, TextDocument, Position, Range, CancellationToken } from 'vscode';
+'use strict';
+
+import { DocumentSymbolProvider, SymbolInformation, SymbolKind, TextDocument, Range, Location, CancellationToken } from 'vscode';
 
 import * as Proto from '../protocol';
 import * as PConst from '../protocol.const';
@@ -49,8 +50,8 @@ export default class TypeScriptDocumentSymbolProvider implements DocumentSymbolP
 		function convert(bucket: SymbolInformation[], item: Proto.NavigationBarItem, containerLabel?: string): void {
 			let result = new SymbolInformation(item.text,
 				outlineTypeTable[item.kind] || SymbolKind.Variable,
-				textSpan2Range(item.spans[0]), resource.uri,
-				containerLabel);
+				containerLabel,
+				new Location(resource.uri, textSpan2Range(item.spans[0])));
 
 			if (item.childItems && item.childItems.length > 0) {
 				for (let child of item.childItems) {
@@ -68,6 +69,7 @@ export default class TypeScriptDocumentSymbolProvider implements DocumentSymbolP
 				return result;
 			}
 		}, (err) => {
+			this.client.error(`'navbar' request failed with error.`, err);
 			return [];
 		});
 	}

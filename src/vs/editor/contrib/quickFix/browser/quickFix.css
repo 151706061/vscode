@@ -32,20 +32,11 @@
 
 .monaco-editor .quickfix-widget {
 	background-color: #F3F3F3;
-	font-size: 12px;
 	border: 1px solid rgb(200, 200, 200);
 	z-index: 40;
 }
-.monaco-editor.mac .quickfix-widget {
-	font-size: 11px;
-}
-
-.monaco-editor.mac .quickfix-widget .text {
-	line-height: 1.3em;
-}
 
 .monaco-editor .quickfix-widget .monaco-tree .monaco-tree-row > .content {
-	-mox-box-sizing: border-box;
 	box-sizing: border-box;
 	line-height: 1.2em;
 	padding: 2px 10px 2px 2px;
@@ -89,7 +80,6 @@
 	padding-bottom: 0.1em;
 	white-space: nowrap;
 	text-overflow: ellipsis;
-	font-family:"Segoe UI", "SFUIText-Regular", "HelveticaNeue", sans-serif, "Droid Sans Fallback";
 	color: #A21B1B;
 }
 
@@ -99,7 +89,7 @@
 }
 
 /* Dark theme */
- .monaco-editor.vs-dark .quickfix-widget {
+.monaco-editor.vs-dark .quickfix-widget {
 	background-color: #2D2D30;
 	border: 1px solid rgb(69, 69, 69);
 }
@@ -110,7 +100,7 @@
 
 
 /* High Contrast Theming */
- .monaco-editor.hc-black .quickfix-widget {
+.monaco-editor.hc-black .quickfix-widget {
 	background-color: #0C141F;
 	border: 2px solid #6FC3DF;
 }

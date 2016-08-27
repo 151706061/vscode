@@ -1,13 +1,14 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
- 'use strict';
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
-import { workspace, ReferenceProvider, Location, TextDocument, Position, Range, CancellationToken } from 'vscode';
+'use strict';
+
+import { ReferenceProvider, Location, TextDocument, Position, Range, CancellationToken } from 'vscode';
 
 import * as Proto from '../protocol';
-import { ITypescriptServiceClient } from '../typescriptService';
+import { ITypescriptServiceClient, APIVersion } from '../typescriptService';
 
 export default class TypeScriptReferenceSupport implements ReferenceProvider {
 
@@ -28,11 +29,15 @@ export default class TypeScriptReferenceSupport implements ReferenceProvider {
 		if (!args.file) {
 			return Promise.resolve<Location[]>([]);
 		}
+		const apiVersion = this.client.apiVersion;
 		return this.client.execute('references', args, token).then((msg) => {
 			let result: Location[] = [];
 			let refs = msg.body.refs;
 			for (let i = 0; i < refs.length; i++) {
 				let ref = refs[i];
+				if (!options.includeDeclaration && apiVersion >= APIVersion.v2_0_0 && ref.isDefinition) {
+					continue;
+				}
 				let url = this.client.asUrl(ref.file);
 				let location = new Location(
 					url,
@@ -41,7 +46,8 @@ export default class TypeScriptReferenceSupport implements ReferenceProvider {
 				result.push(location);
 			}
 			return result;
-		}, () => {
+		}, (err) => {
+			this.client.error(`'references' request failed with error.`, err);
 			return [];
 		});
 	}

@@ -4,42 +4,44 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import Network = require('vs/base/common/network');
-import http = require('vs/base/common/http');
-import winjs = require('vs/base/common/winjs.base');
-import {createDecorator, ServiceIdentifier} from 'vs/platform/instantiation/common/instantiation';
+import { localize } from 'vs/nls';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
+import { IRequestOptions, IRequestContext } from 'vs/base/node/request';
+import { IConfigurationRegistry, Extensions } from 'vs/platform/configuration/common/configurationRegistry';
+import { Registry } from 'vs/platform/platform';
 
-export var IRequestService = createDecorator<IRequestService>('requestService');
+export const IRequestService = createDecorator<IRequestService>('requestService2');
 
 export interface IRequestService {
-	serviceId : ServiceIdentifier<any>;
+	_serviceBrand: any;
 
-	/**
-	 * Returns the URL that can be used to access the provided service. The optional second argument can
-	 * be provided to narrow down the request URL to a specific file system resource. The third argument
-	 * allows to specify to return a fully absolute server URL.
-	 */
-	getRequestUrl(service:string, path?:string, absolute?:boolean):string;
-
-	/**
-	 * Returns the path from the given requestUrl using the provided service identifier. The path will match
-	 * the path that was passed in to IRequestService#getRequestUrl() or null if it can not be identified. Path
-	 * always begins with a leading slash.
-	 */
-	getPath(service:string, requestUrl:Network.URL):string;
-
-	/**
-	 * Wraps the call into WinJS.XHR to allow for mocking and telemetry. Use this instead
-	 * of calling WinJS.XHR directly.
-	 */
-	makeRequest(options:http.IXHROptions):winjs.TPromise<http.IXHRResponse>;
-
-	/**
-	 * Executes a xhr request and expects a chunked response. The value callback of the
-	 * returned promise receives an array of <code>IDataChunk</code> containing all chuncks
-	 * recevied. The progress callback receives an array of <code>IDataChunk</code> containing
-	 * the delta since the last progress callback.
-	 */
-	makeChunkedRequest(options:http.IXHROptions):winjs.TPromise<{request:http.IXHRResponse; chunks:http.IDataChunk[];}>;
+	request(options: IRequestOptions): TPromise<IRequestContext>;
 }
 
+export interface IHTTPConfiguration {
+	http?: {
+		proxy?: string;
+		proxyStrictSSL?: boolean;
+	};
+}
+
+Registry.as<IConfigurationRegistry>(Extensions.Configuration)
+	.registerConfiguration({
+		id: 'http',
+		order: 15,
+		title: localize('httpConfigurationTitle', "HTTP"),
+		type: 'object',
+		properties: {
+			'http.proxy': {
+				type: 'string',
+				pattern: '^https?://([^:]*(:[^@]*)?@)?([^:]+)(:\\d+)?/?$|^$',
+				description: localize('proxy', "The proxy setting to use. If not set will be taken from the http_proxy and https_proxy environment variables")
+			},
+			'http.proxyStrictSSL': {
+				type: 'boolean',
+				default: true,
+				description: localize('strictSSL', "Whether the proxy server certificate should be verified against the list of supplied CAs.")
+			}
+		}
+	});

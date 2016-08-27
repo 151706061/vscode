@@ -73,6 +73,7 @@ class TaskBuilder {
 			suppressTaskName: false,
 			echoCommand: false,
 			isWatching: false,
+			promptOnClose: true,
 			problemMatchers: []
 		};
 	}
@@ -102,6 +103,11 @@ class TaskBuilder {
 		return this;
 	}
 
+	public promptOnClose(value: boolean): TaskBuilder {
+		this.result.promptOnClose = value;
+		return this;
+	}
+
 	public problemMatcher(): ProblemMatcherBuilder {
 		let builder = new ProblemMatcherBuilder(this);
 		this.result.problemMatchers.push(builder.result);
@@ -121,7 +127,7 @@ class ProblemMatcherBuilder {
 			fileLocation: FileLocationKind.Relative,
 			filePrefix: '${cwd}',
 			pattern: undefined
-		}
+		};
 	}
 
 	public owner(value: string): ProblemMatcherBuilder {
@@ -165,10 +171,10 @@ class PatternBuilder {
 		this.result = {
 			regexp: regExp,
 			file: 1,
-			message: 4,
+			message: 0,
 			line: 2,
 			column : 3
-		}
+		};
 	}
 
 	public file(value: number): PatternBuilder {
@@ -236,7 +242,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc"
+				command: 'tsc'
 			}, builder);
 	});
 
@@ -248,7 +254,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				isShellCommand: true
 			},
 			builder);
@@ -263,8 +269,53 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				showOutput: 'silent'
+			},
+			builder
+		);
+	});
+
+	test('tasks: global promptOnClose default', () => {
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('tsc').
+			suppressTaskName(true);
+		testGobalCommand(
+			{
+				version: '0.1.0',
+				command: 'tsc',
+				promptOnClose: true
+			},
+			builder
+		);
+	});
+
+	test('tasks: global promptOnClose', () => {
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('tsc').
+			suppressTaskName(true).
+			promptOnClose(false);
+		testGobalCommand(
+			{
+				version: '0.1.0',
+				command: 'tsc',
+				promptOnClose: false
+			},
+			builder
+		);
+	});
+
+	test('tasks: global promptOnClose default watching', () => {
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('tsc').
+			suppressTaskName(true).
+			isWatching(true).
+			promptOnClose(false);
+		testGobalCommand(
+			{
+				version: '0.1.0',
+				command: 'tsc',
+				isWatching: true
 			},
 			builder
 		);
@@ -279,7 +330,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				showOutput: 'never'
 			},
 			builder
@@ -295,7 +346,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				echoCommand: true
 			},
 			builder
@@ -311,7 +362,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				args: [
 					'--p'
 				]
@@ -324,16 +375,16 @@ suite('Tasks Configuration parsing tests', () => {
 		let builder = new ConfiguationBuilder('tsc');
 		builder.
 			options({
-					cwd: "myPath"
+					cwd: 'myPath'
 				}).
 			task('tsc').
 				suppressTaskName(true);
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				options: {
-					cwd: "myPath"
+					cwd: 'myPath'
 				}
 			},
 			builder
@@ -349,7 +400,7 @@ suite('Tasks Configuration parsing tests', () => {
 		testGobalCommand(
 			{
 				version: '0.1.0',
-				command: "tsc",
+				command: 'tsc',
 				options: {
 					env: {
 						key: 'value'
@@ -361,7 +412,7 @@ suite('Tasks Configuration parsing tests', () => {
 	});
 
 	test('tasks: os windows', () => {
-		let name: string = Platform.isWindows ? 'tsc.win' : 'tsc'
+		let name: string = Platform.isWindows ? 'tsc.win' : 'tsc';
 		let builder = new ConfiguationBuilder(name);
 		builder.
 			task(name).
@@ -377,7 +428,7 @@ suite('Tasks Configuration parsing tests', () => {
 	});
 
 	test('tasks: os windows & global isShellCommand', () => {
-		let name: string = Platform.isWindows ? 'tsc.win' : 'tsc'
+		let name: string = Platform.isWindows ? 'tsc.win' : 'tsc';
 		let builder = new ConfiguationBuilder(name);
 		builder.
 			shell(true).
@@ -395,7 +446,7 @@ suite('Tasks Configuration parsing tests', () => {
 	});
 
 	test('tasks: os mac', () => {
-		let name: string = Platform.isMacintosh ? 'tsc.osx' : 'tsc'
+		let name: string = Platform.isMacintosh ? 'tsc.osx' : 'tsc';
 		let builder = new ConfiguationBuilder(name);
 		builder.
 			task(name).
@@ -411,7 +462,7 @@ suite('Tasks Configuration parsing tests', () => {
 	});
 
 	test('tasks: os linux', () => {
-		let name: string = Platform.isLinux ? 'tsc.linux' : 'tsc'
+		let name: string = Platform.isLinux ? 'tsc.linux' : 'tsc';
 		let builder = new ConfiguationBuilder(name);
 		builder.
 			task(name).
@@ -433,9 +484,9 @@ suite('Tasks Configuration parsing tests', () => {
 				showOutput(Platform.isWindows ? TaskSystem.ShowOutput.Always : TaskSystem.ShowOutput.Never).
 				suppressTaskName(true);
 		let external: ExternalTaskRunnerConfiguration = {
- 			version: '0.1.0',
- 			command: 'tsc',
- 			showOutput: 'never',
+			version: '0.1.0',
+			command: 'tsc',
+			showOutput: 'never',
 			windows: {
 				showOutput: 'always'
 			}
@@ -450,8 +501,8 @@ suite('Tasks Configuration parsing tests', () => {
 				echoCommand(Platform.isWindows ? false : true).
 				suppressTaskName(true);
 		let external: ExternalTaskRunnerConfiguration = {
- 			version: '0.1.0',
- 			command: 'tsc',
+			version: '0.1.0',
+			command: 'tsc',
 			echoCommand: true,
 			windows: {
 				echoCommand: false
@@ -578,7 +629,8 @@ suite('Tasks Configuration parsing tests', () => {
 			showOutput(TaskSystem.ShowOutput.Never).
 			echoCommand(true).
 			args(['--p']).
-			isWatching(true);
+			isWatching(true).
+			promptOnClose(false);
 
 		let result = testConfiguration(external, builder);
 		assert.ok(result.defaultTestTaskIdentifier);
@@ -756,6 +808,53 @@ suite('Tasks Configuration parsing tests', () => {
 		testConfiguration(external, builder);
 	});
 
+	test('tasks: prompt on close default', () => {
+		let external: ExternalTaskRunnerConfiguration = {
+			version: '0.1.0',
+			command: 'tsc',
+			tasks: [
+				{
+					taskName: 'taskName'
+				}
+			]
+		};
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('taskName').promptOnClose(true);
+		testConfiguration(external, builder);
+	});
+
+	test('tasks: prompt on close watching', () => {
+		let external: ExternalTaskRunnerConfiguration = {
+			version: '0.1.0',
+			command: 'tsc',
+			tasks: [
+				{
+					taskName: 'taskName',
+					isWatching: true
+				}
+			]
+		};
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('taskName').isWatching(true).promptOnClose(false);
+		testConfiguration(external, builder);
+	});
+
+	test('tasks: prompt on close set', () => {
+		let external: ExternalTaskRunnerConfiguration = {
+			version: '0.1.0',
+			command: 'tsc',
+			tasks: [
+				{
+					taskName: 'taskName',
+					promptOnClose: false
+				}
+			]
+		};
+		let builder = new ConfiguationBuilder('tsc');
+		builder.task('taskName').promptOnClose(false);
+		testConfiguration(external, builder);
+	});
+
 	test('tasks: two tasks', () => {
 		let external: ExternalTaskRunnerConfiguration = {
 			version: '0.1.0',
@@ -783,7 +882,7 @@ suite('Tasks Configuration parsing tests', () => {
 		let keys = Object.keys(config.tasks);
 		assert.strictEqual(keys.length, 1);
 		let task = config.tasks[keys[0]];
-		assert.ok(task)
+		assert.ok(task);
 		assert.strictEqual(task.problemMatchers.length, resolved);
 
 	}
@@ -847,6 +946,7 @@ suite('Tasks Configuration parsing tests', () => {
 		assert.strictEqual(actual.suppressTaskName, expected.suppressTaskName, 'suppressTaskName');
 		assert.strictEqual(actual.echoCommand, expected.echoCommand, 'echoCommand');
 		assert.strictEqual(actual.isWatching, expected.isWatching, 'isWatching');
+		assert.strictEqual(actual.promptOnClose, expected.promptOnClose, 'promptOnClose');
 		assert.strictEqual(typeof actual.problemMatchers, typeof expected.problemMatchers);
 		if (actual.problemMatchers && expected.problemMatchers) {
 			assert.strictEqual(actual.problemMatchers.length, expected.problemMatchers.length);

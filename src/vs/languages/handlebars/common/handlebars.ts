@@ -4,17 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import EditorCommon = require('vs/editor/common/editorCommon');
-import Modes = require('vs/editor/common/modes');
-import supports = require('vs/editor/common/modes/supports');
+import modes = require('vs/editor/common/modes');
 import htmlMode = require('vs/languages/html/common/html');
-import winjs = require('vs/base/common/winjs.base');
-import {OnEnterSupport} from 'vs/editor/common/modes/supports/onEnter';
 import handlebarsTokenTypes = require('vs/languages/handlebars/common/handlebarsTokenTypes');
 import htmlWorker = require('vs/languages/html/common/htmlWorker');
 import {IInstantiationService} from 'vs/platform/instantiation/common/instantiation';
-import {IThreadService} from 'vs/platform/thread/common/thread';
 import {IModeService} from 'vs/editor/common/services/modeService';
+import {LanguageConfigurationRegistry, LanguageConfiguration} from 'vs/editor/common/modes/languageConfigurationRegistry';
+import {createWordRegExp} from 'vs/editor/common/modes/abstractMode';
+import {ILeavingNestedModeData} from 'vs/editor/common/modes/supports/tokenizationSupport';
+import {wireCancellationToken} from 'vs/base/common/async';
+import {ICompatWorkerService} from 'vs/editor/common/services/compatWorkerService';
+import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
+import {IConfigurationService} from 'vs/platform/configuration/common/configuration';
 
 export enum States {
 	HTML,
@@ -24,23 +26,23 @@ export enum States {
 
 export class HandlebarsState extends htmlMode.State {
 
-	constructor(mode:Modes.IMode,
-		public kind:htmlMode.States,
+	constructor(mode:modes.IMode,
+		kind:htmlMode.States,
 		public handlebarsKind:States,
-		public lastTagName:string,
-		public lastAttributeName:string,
-		public embeddedContentType:string,
-		public attributeValueQuote:string,
-		public attributeValue:string) {
+		lastTagName:string,
+		lastAttributeName:string,
+		embeddedContentType:string,
+		attributeValueQuote:string,
+		attributeValueLength:number) {
 
-		super(mode, kind, lastTagName, lastAttributeName, embeddedContentType, attributeValueQuote, attributeValue);
+		super(mode, kind, lastTagName, lastAttributeName, embeddedContentType, attributeValueQuote, attributeValueLength);
 	}
 
 	public makeClone(): HandlebarsState {
-		return new HandlebarsState(this.getMode(), this.kind, this.handlebarsKind, this.lastTagName, this.lastAttributeName, this.embeddedContentType, this.attributeValueQuote, this.attributeValue);
+		return new HandlebarsState(this.getMode(), this.kind, this.handlebarsKind, this.lastTagName, this.lastAttributeName, this.embeddedContentType, this.attributeValueQuote, this.attributeValueLength);
 	}
 
-	public equals(other:Modes.IState):boolean {
+	public equals(other:modes.IState):boolean {
 		if (other instanceof HandlebarsState) {
 			return (
 				super.equals(other)
@@ -49,16 +51,16 @@ export class HandlebarsState extends htmlMode.State {
 		return false;
 	}
 
-	public tokenize(stream:Modes.IStream) : Modes.ITokenizationResult {
+	public tokenize(stream:modes.IStream) : modes.ITokenizationResult {
 		switch(this.handlebarsKind) {
 			case States.HTML:
 				if (stream.advanceIfString('{{{').length > 0) {
 					this.handlebarsKind = States.UnescapedExpression;
-					return { type: handlebarsTokenTypes.EMBED_UNESCAPED, bracket: Modes.Bracket.Open };
+					return { type: handlebarsTokenTypes.EMBED_UNESCAPED };
 				}
 				else if (stream.advanceIfString('{{').length > 0) {
 					this.handlebarsKind = States.Expression;
-					return { type: handlebarsTokenTypes.EMBED, bracket: Modes.Bracket.Open };
+					return { type: handlebarsTokenTypes.EMBED };
 				}
 			break;
 
@@ -66,11 +68,11 @@ export class HandlebarsState extends htmlMode.State {
 			case States.UnescapedExpression:
 				if (this.handlebarsKind === States.Expression && stream.advanceIfString('}}').length > 0) {
 					this.handlebarsKind = States.HTML;
-					return { type: handlebarsTokenTypes.EMBED, bracket: Modes.Bracket.Close };
+					return { type: handlebarsTokenTypes.EMBED };
 				}
 				else if (this.handlebarsKind === States.UnescapedExpression &&stream.advanceIfString('}}}').length > 0) {
 					this.handlebarsKind = States.HTML;
-					return { type: handlebarsTokenTypes.EMBED_UNESCAPED, bracket: Modes.Bracket.Close };
+					return { type: handlebarsTokenTypes.EMBED_UNESCAPED };
 				}
 				else if(stream.skipWhitespace().length > 0) {
 					return { type: ''};
@@ -78,12 +80,12 @@ export class HandlebarsState extends htmlMode.State {
 
 				if(stream.peek() === '#') {
 					stream.advanceWhile(/^[^\s}]/);
-					return { type: handlebarsTokenTypes.KEYWORD, bracket: Modes.Bracket.Open };
+					return { type: handlebarsTokenTypes.KEYWORD };
 				}
 
 				if(stream.peek() === '/') {
 					stream.advanceWhile(/^[^\s}]/);
-					return { type: handlebarsTokenTypes.KEYWORD, bracket: Modes.Bracket.Close };
+					return { type: handlebarsTokenTypes.KEYWORD };
 				}
 
 				if(stream.advanceIfString('else')) {
@@ -107,49 +109,91 @@ export class HandlebarsState extends htmlMode.State {
 
 export class HandlebarsMode extends htmlMode.HTMLMode<htmlWorker.HTMLWorker> {
 
+	public static LANG_CONFIG:LanguageConfiguration = {
+		wordPattern: createWordRegExp('#-?%'),
+
+		comments: {
+			blockComment: ['<!--', '-->']
+		},
+
+		brackets: [
+			['<!--', '-->'],
+			['{{', '}}']
+		],
+
+		__electricCharacterSupport: {
+			embeddedElectricCharacters: ['*', '}', ']', ')']
+		},
+
+		autoClosingPairs: [
+			{ open: '{', close: '}' },
+			{ open: '[', close: ']' },
+			{ open: '(', close: ')' },
+			{ open: '"', close: '"' },
+			{ open: '\'', close: '\'' }
+		],
+
+		surroundingPairs: [
+			{ open: '<', close: '>' },
+			{ open: '"', close: '"' },
+			{ open: '\'', close: '\'' }
+		],
+
+		onEnterRules: [
+			{
+				beforeText: new RegExp(`<(?!(?:${htmlMode.EMPTY_ELEMENTS.join('|')}))(\\w[\\w\\d]*)([^/>]*(?!/)>)[^<]*$`, 'i'),
+				afterText: /^<\/(\w[\w\d]*)\s*>$/i,
+				action: { indentAction: modes.IndentAction.IndentOutdent }
+			},
+			{
+				beforeText: new RegExp(`<(?!(?:${htmlMode.EMPTY_ELEMENTS.join('|')}))(\\w[\\w\\d]*)([^/>]*(?!/)>)[^<]*$`, 'i'),
+				action: { indentAction: modes.IndentAction.Indent }
+			}
+		],
+	};
+
 	constructor(
-		descriptor:Modes.IModeDescriptor,
+		descriptor:modes.IModeDescriptor,
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IThreadService threadService: IThreadService,
-		@IModeService modeService: IModeService
+		@IModeService modeService: IModeService,
+		@ICompatWorkerService compatWorkerService: ICompatWorkerService,
+		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
+		@IConfigurationService configurationService: IConfigurationService
 	) {
-		super(descriptor, instantiationService, threadService, modeService);
-
-		this.formattingSupport = null;
-
-		this.onEnterSupport = new OnEnterSupport(this.getId(), {
-			brackets: [
-				{ open: '<!--', close: '-->' },
-				{ open: '{{', close: '}}' },
-			]
-		});
+		super(descriptor, instantiationService, modeService, compatWorkerService, workspaceContextService, configurationService);
 	}
 
-	public asyncCtor(): winjs.Promise {
-		return super.asyncCtor().then(() => {
-			var pairs = this.characterPairSupport.getAutoClosingPairs().slice(0).concat([
-				{ open: '{', close: '}'}
-			]);
+	protected _registerSupports(): void {
+		modes.SuggestRegistry.register(this.getId(), {
+			triggerCharacters: ['.', ':', '<', '"', '=', '/'],
+			provideCompletionItems: (model, position, token): Thenable<modes.ISuggestResult> => {
+				return wireCancellationToken(token, this._provideCompletionItems(model.uri, position));
+			}
+		}, true);
 
-			this.characterPairSupport = new supports.CharacterPairSupport(this, {
-				autoClosingPairs:  pairs.slice(0),
-				surroundingPairs: [
-					{ open: '<', close: '>' },
-					{ open: '"', close: '"' },
-					{ open: '\'', close: '\'' }
-				]
-			});
-		});
+		modes.DocumentHighlightProviderRegistry.register(this.getId(), {
+			provideDocumentHighlights: (model, position, token): Thenable<modes.DocumentHighlight[]> => {
+				return wireCancellationToken(token, this._provideDocumentHighlights(model.uri, position));
+			}
+		}, true);
+
+		modes.LinkProviderRegistry.register(this.getId(), {
+			provideLinks: (model, token): Thenable<modes.ILink[]> => {
+				return wireCancellationToken(token, this.provideLinks(model.uri));
+			}
+		}, true);
+
+		LanguageConfigurationRegistry.register(this.getId(), HandlebarsMode.LANG_CONFIG);
 	}
 
-	public getInitialState() : Modes.IState {
-		return new HandlebarsState(this, htmlMode.States.Content, States.HTML, '', '', '', '', '');
+	public getInitialState() : modes.IState {
+		return new HandlebarsState(this, htmlMode.States.Content, States.HTML, '', '', '', '', 0);
 	}
 
-	public getLeavingNestedModeData(line:string, state:Modes.IState):supports.ILeavingNestedModeData {
+	public getLeavingNestedModeData(line:string, state:modes.IState):ILeavingNestedModeData {
 		var leavingNestedModeData = super.getLeavingNestedModeData(line, state);
 		if (leavingNestedModeData) {
-			leavingNestedModeData.stateAfterNestedMode = new HandlebarsState(this, htmlMode.States.Content, States.HTML, '', '', '', '', '');
+			leavingNestedModeData.stateAfterNestedMode = new HandlebarsState(this, htmlMode.States.Content, States.HTML, '', '', '', '', 0);
 		}
 		return leavingNestedModeData;
 	}

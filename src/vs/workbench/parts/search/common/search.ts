@@ -6,33 +6,33 @@
 'use strict';
 
 import {TPromise} from 'vs/base/common/winjs.base';
+import {onUnexpectedError, illegalArgument} from 'vs/base/common/errors';
 import {IDisposable} from 'vs/base/common/lifecycle';
-import LanguageFeatureRegistry from 'vs/editor/common/modes/languageFeatureRegistry';
+import {CommonEditorRegistry} from 'vs/editor/common/editorCommonExtensions';
 import {IRange} from 'vs/editor/common/editorCommon';
 import URI from 'vs/base/common/uri';
 
 /**
  * Interface used to navigate to types by value.
  */
-export interface ITypeBearing {
-	containerName: string;
+export interface IWorkspaceSymbol {
 	name: string;
-	parameters: string;
 	type: string;
+	containerName: string;
 	range: IRange;
-	resourceUri: URI;
+	resource: URI;
 }
 
-export interface INavigateTypesSupport {
-	getNavigateToItems:(search: string)=>TPromise<ITypeBearing[]>;
+export interface IWorkspaceSymbolProvider {
+	provideWorkspaceSymbols(search: string): TPromise<IWorkspaceSymbol[]>;
+	resolveWorkspaceSymbol?: (item: IWorkspaceSymbol) => TPromise<IWorkspaceSymbol>;
 }
 
+export namespace WorkspaceSymbolProviderRegistry {
 
-export namespace NavigateTypesSupportRegistry {
+	const _supports: IWorkspaceSymbolProvider[] = [];
 
-	const _supports: INavigateTypesSupport[] = [];
-
-	export function register(support:INavigateTypesSupport):IDisposable {
+	export function register(support: IWorkspaceSymbolProvider): IDisposable {
 
 		if (support) {
 			_supports.push(support);
@@ -48,14 +48,33 @@ export namespace NavigateTypesSupportRegistry {
 					}
 				}
 			}
-		}
+		};
 	}
 
-	// export function has(): boolean {
-	// 	return _supports.length > 0;
-	// }
-
-	export function getAll(): INavigateTypesSupport[] {
+	export function all(): IWorkspaceSymbolProvider[] {
 		return _supports.slice(0);
 	}
 }
+
+export function getWorkspaceSymbols(query: string): TPromise<[IWorkspaceSymbolProvider, IWorkspaceSymbol[]][]> {
+
+	const result: [IWorkspaceSymbolProvider, IWorkspaceSymbol[]][] = [];
+
+	const promises = WorkspaceSymbolProviderRegistry.all().map(support => {
+		return support.provideWorkspaceSymbols(query).then(value => {
+			if (Array.isArray(value)) {
+				result.push([support, value]);
+			}
+		}, onUnexpectedError);
+	});
+
+	return TPromise.join(promises).then(_ => result);
+}
+
+CommonEditorRegistry.registerLanguageCommand('_executeWorkspaceSymbolProvider', function (accessor, args: { query: string; }) {
+	let {query} = args;
+	if (typeof query !== 'string') {
+		throw illegalArgument();
+	}
+	return getWorkspaceSymbols(query);
+});

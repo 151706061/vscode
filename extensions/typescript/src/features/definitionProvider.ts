@@ -1,10 +1,11 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
- 'use strict';
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
-import { workspace, DefinitionProvider, TextDocument, Position, Range, CancellationToken, Location } from 'vscode';
+'use strict';
+
+import { DefinitionProvider, TextDocument, Position, Range, CancellationToken, Location } from 'vscode';
 
 import * as Proto from '../protocol';
 import { ITypescriptServiceClient } from '../typescriptService';
@@ -41,7 +42,8 @@ export default class TypeScriptDefinitionProvider implements DefinitionProvider 
 					return new Location(resource, new Range(location.start.line - 1, location.start.offset - 1, location.end.line - 1, location.end.offset - 1));
 				}
 			});
-		}, () => {
+		}, (error) => {
+			this.client.error(`'definition' request failed with error.`, error);
 			return null;
 		});
 	}

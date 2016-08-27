@@ -1,16 +1,16 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 'use strict';
 
-import { CompletionItem, TextDocument, Position, CompletionItemKind, CompletionItemProvider, CancellationToken } from 'vscode';
+import { CompletionItem, TextDocument, Position, CompletionItemKind, CompletionItemProvider, CancellationToken, WorkspaceConfiguration } from 'vscode';
 
-import { IConfiguration, defaultConfiguration } from './configuration';
 import { ITypescriptServiceClient } from '../typescriptService';
 
 import * as PConst from '../protocol.const';
-import { CompletionEntry, CompletionsRequestArgs, CompletionsResponse, CompletionDetailsRequestArgs, CompletionDetailsResponse, CompletionEntryDetails } from '../protocol';
+import { CompletionEntry, CompletionsRequestArgs, CompletionDetailsRequestArgs, CompletionEntryDetails } from '../protocol';
 import * as Previewer from './previewer';
 
 class MyCompletionItem extends CompletionItem {
@@ -50,10 +50,20 @@ class MyCompletionItem extends CompletionItem {
 				return CompletionItemKind.Class;
 			case PConst.Kind.interface:
 				return CompletionItemKind.Interface;
+			case PConst.Kind.warning:
+				return CompletionItemKind.File;
 		}
 
 		return CompletionItemKind.Property;
 	}
+}
+
+interface Configuration {
+	useCodeSnippetsOnMethodSuggest?: boolean;
+}
+
+namespace Configuration {
+	export const useCodeSnippetsOnMethodSuggest = 'useCodeSnippetsOnMethodSuggest';
 }
 
 export default class TypeScriptCompletionItemProvider implements CompletionItemProvider {
@@ -63,15 +73,15 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 	public sortBy = [{ type: 'reference', partSeparator: '/' }];
 
 	private client: ITypescriptServiceClient;
-	private config: IConfiguration;
+	private config: Configuration;
 
 	constructor(client: ITypescriptServiceClient) {
 		this.client = client;
-		this.config = defaultConfiguration;
+		this.config = { useCodeSnippetsOnMethodSuggest: false };
 	}
 
-	public setConfiguration(config: IConfiguration): void {
-		this.config = config;
+	public updateConfiguration(config: WorkspaceConfiguration): void {
+		this.config.useCodeSnippetsOnMethodSuggest = config.get(Configuration.useCodeSnippetsOnMethodSuggest, false);
 	}
 
 	public provideCompletionItems(document: TextDocument, position: Position, token: CancellationToken): Promise<CompletionItem[]> {
@@ -115,8 +125,8 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 			}
 
 			return completionItems;
-
-		}, (err: CompletionsResponse) => {
+		}, (err) => {
+			this.client.error(`'completions' request failed with error.`, err);
 			return [];
 		});
 	}
@@ -158,7 +168,8 @@ export default class TypeScriptCompletionItemProvider implements CompletionItemP
 
 				return item;
 
-			}, (err: CompletionDetailsResponse) => {
+			}, (err) => {
+				this.client.error(`'completionEntryDetails' request failed with error.`, err);
 				return item;
 			});
 

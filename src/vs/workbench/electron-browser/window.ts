@@ -6,39 +6,55 @@
 'use strict';
 
 import platform = require('vs/base/common/platform');
-import paths = require('vs/base/common/paths');
-import uri from 'vs/base/common/uri';
+import URI from 'vs/base/common/uri';
+import DOM = require('vs/base/browser/dom');
+import DND = require('vs/base/browser/dnd');
+import {Builder, $} from 'vs/base/browser/builder';
 import {Identifiers} from 'vs/workbench/common/constants';
-import {EventType, EditorEvent} from 'vs/workbench/browser/events';
-import workbenchEditorCommon = require('vs/workbench/common/editor');
+import {asFileEditorInput} from 'vs/workbench/common/editor';
 import {IViewletService} from 'vs/workbench/services/viewlet/common/viewletService';
 import {IWorkbenchEditorService} from 'vs/workbench/services/editor/common/editorService';
-import dom = require('vs/base/browser/dom');
-import {AnchorAlignment, ContextView} from 'vs/base/browser/ui/contextview/contextview';
-import {IDisposable} from 'vs/base/common/lifecycle';
 import {IStorageService} from 'vs/platform/storage/common/storage';
 import {IEventService} from 'vs/platform/event/common/event';
-import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
+import {IEditorGroupService} from 'vs/workbench/services/group/common/groupService';
 
-import remote = require('remote');
-import ipc = require('ipc');
+import {ipcRenderer as ipc, shell, remote} from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const Shell = remote.require('shell');
-const Dialog = remote.require('dialog');
+const dialog = remote.dialog;
+
+export interface IWindowConfiguration {
+	window: {
+		openFilesInNewWindow: boolean;
+		reopenFolders: string;
+		restoreFullscreen: boolean;
+		zoomLevel: number;
+	};
+}
+
+enum DraggedFileType {
+	UNKNOWN,
+	FILE,
+	EXTENSION,
+	FOLDER
+}
 
 export class ElectronWindow {
-	private win: remote.BrowserWindow;
+	private win: Electron.BrowserWindow;
+	private windowId: number;
 
 	constructor(
-		win: remote.BrowserWindow,
+		win: Electron.BrowserWindow,
 		shellContainer: HTMLElement,
-		@IWorkspaceContextService private contextService: IWorkspaceContextService,
 		@IEventService private eventService: IEventService,
 		@IStorageService private storageService: IStorageService,
 		@IWorkbenchEditorService private editorService: IWorkbenchEditorService,
+		@IEditorGroupService private editorGroupService: IEditorGroupService,
 		@IViewletService private viewletService: IViewletService
 	) {
 		this.win = win;
+		this.windowId = win.id;
 		this.registerListeners();
 	}
 
@@ -46,102 +62,114 @@ export class ElectronWindow {
 
 		// React to editor input changes (Mac only)
 		if (platform.platform === platform.Platform.Mac) {
-			this.eventService.addListener(EventType.EDITOR_INPUT_CHANGED, (e: EditorEvent) => {
-				// if we dont use setTimeout() here for some reason there is an issue when switching between 2 files side by side
-				// with the mac trackpad where the editor would think the user wants to select. to reproduce, have 2 files, click
-				// into the non-focussed one and move the mouse down and see the editor starts to select lines.
-				setTimeout(() => {
-					let fileInput = workbenchEditorCommon.asFileEditorInput(e.editorInput, true);
-					if (fileInput) {
-						this.win.setRepresentedFilename(fileInput.getResource().fsPath);
-					} else {
-						this.win.setRepresentedFilename('');
-					}
-				}, 0);
+			this.editorGroupService.onEditorsChanged(() => {
+				const fileInput = asFileEditorInput(this.editorService.getActiveEditorInput(), true);
+				let representedFilename = '';
+				if (fileInput) {
+					representedFilename = fileInput.getResource().fsPath;
+				}
 
+				ipc.send('vscode:setRepresentedFilename', this.windowId, representedFilename);
 			});
 		}
 
-		// Prevent a dropped file from opening as nw application
-		window.document.body.addEventListener('dragover', (e: DragEvent) => {
-			e.preventDefault();
-		});
+		let draggedExternalResources: URI[];
+		let dropOverlay: Builder;
 
-		// Let a dropped file open inside Monaco (only if dropped over editor area)
-		window.document.body.addEventListener('drop', (e: DragEvent) => {
-			e.preventDefault();
+		function cleanUp(): void {
+			draggedExternalResources = void 0;
 
-			let editorArea = window.document.getElementById(Identifiers.EDITOR_PART);
-			if (dom.isAncestor(e.toElement, editorArea)) {
-				let pathsOpened = false;
+			if (dropOverlay) {
+				dropOverlay.destroy();
+				dropOverlay = void 0;
+			}
+		}
 
-				// Check for native file transfer
-				if (e.dataTransfer && e.dataTransfer.files) {
-					let thepaths: string[] = [];
-					for (let i = 0; i < e.dataTransfer.files.length; i++) {
-						if (e.dataTransfer.files[i] && (<any>e.dataTransfer.files[i]).path) {
-							thepaths.push((<any>e.dataTransfer.files[i]).path);
-						}
-					}
+		// Detect resources dropped into Code from outside
+		window.document.body.addEventListener(DOM.EventType.DRAG_OVER, (e: DragEvent) => {
+			DOM.EventHelper.stop(e);
 
-					if (thepaths.length) {
-						pathsOpened = true;
-						this.focus(); // make sure this window has focus so that the open call reaches the right window!
-						this.open(thepaths);
-					}
-				}
+			if (!draggedExternalResources) {
+				draggedExternalResources = DND.extractResources(e, true /* external only */);
 
-				// Otherwise check for special webkit transfer
-				if (!pathsOpened && e.dataTransfer && (<any>e).dataTransfer.items) {
-					let items: { getAsString: (clb: (str: string) => void) => void; }[] = (<any>e).dataTransfer.items;
-					if (items.length && typeof items[0].getAsString === 'function') {
-						items[0].getAsString((str) => {
-							try {
-								let resource = uri.parse(str);
-								if (resource.scheme === 'file') {
+				// Show Code wide overlay if we detect a Folder or Extension to be dragged
+				if (draggedExternalResources.some(r => {
+					const kind = this.getFileKind(r);
 
-									// Do not allow to drop a child of the currently active workspace. This prevents an issue
-									// where one would drop a folder from the explorer by accident into the editor area and
-									// loose all the context.
-									let workspace = this.contextService.getWorkspace();
-									if (workspace && paths.isEqualOrParent(resource.fsPath, workspace.resource.fsPath)) {
-										return;
-									}
+					return kind === DraggedFileType.FOLDER || kind === DraggedFileType.EXTENSION;
+				})) {
+					dropOverlay = $(window.document.getElementById(Identifiers.WORKBENCH_CONTAINER))
+						.div({ id: 'monaco-workbench-drop-overlay' })
+						.on(DOM.EventType.DROP, (e: DragEvent) => {
+							DOM.EventHelper.stop(e, true);
 
-									this.focus(); // make sure this window has focus so that the open call reaches the right window!
-									this.open([decodeURIComponent(resource.fsPath)]);
-								}
-							} catch (error) {
-								// not a resource
-							}
+							this.focus(); // make sure this window has focus so that the open call reaches the right window!
+							ipc.send('vscode:windowOpen', draggedExternalResources.map(r => r.fsPath)); // handled from browser process
+
+							cleanUp();
+						})
+						.on([DOM.EventType.DRAG_LEAVE, DOM.EventType.DRAG_END], () => {
+							cleanUp();
+						}).once(DOM.EventType.MOUSE_OVER, () => {
+							// Under some circumstances we have seen reports where the drop overlay is not being
+							// cleaned up and as such the editor area remains under the overlay so that you cannot
+							// type into the editor anymore. This seems related to using VMs and DND via host and
+							// guest OS, though some users also saw it without VMs.
+							// To protect against this issue we always destroy the overlay as soon as we detect a
+							// mouse event over it. The delay is used to guarantee we are not interfering with the
+							// actual DROP event that can also trigger a mouse over event.
+							// See also: https://github.com/Microsoft/vscode/issues/10970
+							setTimeout(() => {
+								cleanUp();
+							}, 300);
 						});
-					}
 				}
 			}
 		});
 
-		// Handle window.open() calls
-		window.open = function(url: string, target: string, features: string, replace: boolean) {
-			Shell.openExternal(url);
+		// Clear our map and overlay on any finish of DND outside the overlay
+		[DOM.EventType.DROP, DOM.EventType.DRAG_END].forEach(event => {
+			window.document.body.addEventListener(event, (e: DragEvent) => {
+				if (!dropOverlay || e.target !== dropOverlay.getHTMLElement()) {
+					cleanUp(); // only run cleanUp() if we are not over the overlay (because we are being called in capture phase)
+				}
+			}, true /* use capture because components within may preventDefault() when they accept the drop */);
+		});
 
-			return <Window>null;
+		// prevent opening a real URL inside the shell
+		window.document.body.addEventListener(DOM.EventType.DROP, (e: DragEvent) => {
+			DOM.EventHelper.stop(e);
+		});
+
+		// Handle window.open() calls
+		(<any>window).open = function (url: string, target: string, features: string, replace: boolean) {
+			shell.openExternal(url);
+
+			return null;
+		};
+
+		// Patch focus to also focus the entire window
+		const originalFocus = window.focus;
+		const $this = this;
+		window.focus = function () {
+			originalFocus.call(this, arguments);
+			$this.focus();
 		};
 	}
 
-	public open(pathsToOpen: string[]): void;
-	public open(fileResource: uri): void;
-	public open(pathToOpen: string): void;
-	public open(arg1: any): void {
-		let pathsToOpen: string[];
-		if (Array.isArray(arg1)) {
-			pathsToOpen = arg1;
-		} else if (typeof arg1 === 'string') {
-			pathsToOpen = [arg1];
-		} else {
-			pathsToOpen = [(<uri>arg1).fsPath];
+	private getFileKind(resource: URI): DraggedFileType {
+		if (path.extname(resource.fsPath) === '.vsix') {
+			return DraggedFileType.EXTENSION;
 		}
 
-		ipc.send('vscode:windowOpen', pathsToOpen); // handled from browser process
+		let kind = DraggedFileType.UNKNOWN;
+		try {
+			kind = fs.statSync(resource.fsPath).isDirectory() ? DraggedFileType.FOLDER : DraggedFileType.FILE;
+		} catch (error) {
+			// Do not fail in DND handler
+		}
+
+		return kind;
 	}
 
 	public openNew(): void {
@@ -152,33 +180,39 @@ export class ElectronWindow {
 		this.win.close();
 	}
 
-	public showMessageBox(options: remote.IMessageBoxOptions): number {
-		return Dialog.showMessageBox(this.win, options);
+	public reload(): void {
+		ipc.send('vscode:reloadWindow', this.windowId);
+	}
+
+	public showMessageBox(options: Electron.ShowMessageBoxOptions): number {
+		return dialog.showMessageBox(this.win, options);
+	}
+
+	public showSaveDialog(options: Electron.SaveDialogOptions, callback?: (fileName: string) => void): string {
+		if (callback) {
+			return dialog.showSaveDialog(this.win, options, callback);
+		}
+
+		return dialog.showSaveDialog(this.win, options); // https://github.com/electron/electron/issues/4936
 	}
 
 	public setFullScreen(fullscreen: boolean): void {
-		this.win.setFullScreen(fullscreen);
+		ipc.send('vscode:setFullScreen', this.windowId, fullscreen); // handled from browser process
 	}
 
 	public openDevTools(): void {
-		this.win.openDevTools();
-	}
-
-	public isFullScreen(): boolean {
-		return this.win.isFullScreen();
+		ipc.send('vscode:openDevTools', this.windowId); // handled from browser process
 	}
 
 	public setMenuBarVisibility(visible: boolean): void {
-		this.win.setMenuBarVisibility(visible);
+		ipc.send('vscode:setMenuBarVisibility', this.windowId, visible); // handled from browser process
 	}
 
 	public focus(): void {
-		if (!this.win.isFocused()) {
-			this.win.focus();
-		}
+		ipc.send('vscode:focusWindow', this.windowId); // handled from browser process
 	}
 
 	public flashFrame(): void {
-		this.win.flashFrame(!this.win.isFocused());
+		ipc.send('vscode:flashFrame', this.windowId); // handled from browser process
 	}
 }

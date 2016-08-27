@@ -5,22 +5,22 @@
 'use strict';
 
 import * as assert from 'assert';
-import Event, {Emitter, fromEventEmitter} from 'vs/base/common/event';
+import Event, {Emitter, fromEventEmitter, debounceEvent, EventBufferer, once} from 'vs/base/common/event';
 import {IDisposable} from 'vs/base/common/lifecycle';
 import {EventEmitter} from 'vs/base/common/eventEmitter';
-import {EventSource} from 'vs/base/common/eventSource';
+import Errors = require('vs/base/common/errors');
 
 namespace Samples {
 
 	export class EventCounter {
 
-		public count = 0;
+		count = 0;
 
-		public reset() {
+		reset() {
 			this.count = 0;
 		}
 
-		public onEvent() {
+		onEvent() {
 			this.count += 1;
 		}
 	}
@@ -29,9 +29,9 @@ namespace Samples {
 
 		private _onDidChange = new Emitter<string>();
 
-		public onDidChange: Event<string> = this._onDidChange.event;
+		onDidChange: Event<string> = this._onDidChange.event;
 
-		public setText(value:string) {
+		setText(value:string) {
 			//...
 			this._onDidChange.fire(value);
 		}
@@ -45,29 +45,26 @@ namespace Samples {
 
 		private _eventBus = new EventEmitter();
 
-		public onDidChange = fromEventEmitter<string>(this._eventBus, Document3b._didChange);
+		onDidChange = fromEventEmitter<string>(this._eventBus, Document3b._didChange);
 
-		public setText(value:string) {
+		setText(value:string) {
 			//...
 			this._eventBus.emit(Document3b._didChange, value);
 		}
 	}
 }
 
-
-let counter = new Samples.EventCounter();
-
-setup(function () {
-	counter.reset();
-})
-
 suite('Event',function(){
+
+	const counter = new Samples.EventCounter();
+
+	setup(() => counter.reset());
 
 	test('Emitter plain', function () {
 
 		let doc = new Samples.Document3();
 
-		document.createElement('div').onclick = function () { }
+		document.createElement('div').onclick = function () { };
 		let subscription = doc.onDidChange(counter.onEvent, counter);
 
 		doc.setText('far');
@@ -161,15 +158,128 @@ suite('Event',function(){
 	});
 
 	test('throwingListener', function() {
-		let a = new Emitter();
-		let hit = false;
-		a.event(function() {
-			throw 9;
-		})
-		a.event(function() {
-			hit = true;
+		var origErrorHandler = Errors.errorHandler.getUnexpectedErrorHandler();
+		Errors.setUnexpectedErrorHandler(() => null);
+
+		try {
+			let a = new Emitter();
+			let hit = false;
+			a.event(function() {
+				throw 9;
+			});
+			a.event(function() {
+				hit = true;
+			});
+			a.fire(undefined);
+			assert.equal(hit, true);
+
+		} finally {
+			Errors.setUnexpectedErrorHandler(origErrorHandler);
+		}
+	});
+
+	test('Debounce Event', function (done: () => void) {
+		let doc = new Samples.Document3();
+
+		let onDocDidChange = debounceEvent(doc.onDidChange, (prev: string[], cur) => {
+			if (!prev) {
+				prev = [cur];
+			} else if (prev.indexOf(cur) < 0) {
+				prev.push(cur);
+			}
+			return prev;
+		}, 10);
+
+		let count = 0;
+
+		onDocDidChange(keys => {
+			count++;
+			assert.ok(keys, 'was not expecting keys.');
+			if (count === 1) {
+				doc.setText('4');
+				assert.deepEqual(keys, ['1', '2', '3']);
+			} else if (count === 2){
+				assert.deepEqual(keys, ['4']);
+				done();
+			}
 		});
-		a.fire(undefined);
-		assert.equal(hit, true);
+
+		doc.setText('1');
+		doc.setText('2');
+		doc.setText('3');
+	});
+});
+
+suite('EventBufferer', () => {
+
+	test('should not buffer when not wrapped', () => {
+		const bufferer = new EventBufferer();
+		const counter = new Samples.EventCounter();
+		const emitter = new Emitter<void>();
+		const event = bufferer.wrapEvent(emitter.event);
+		const listener = event(counter.onEvent, counter);
+
+		assert.equal(counter.count, 0);
+		emitter.fire();
+		assert.equal(counter.count, 1);
+		emitter.fire();
+		assert.equal(counter.count, 2);
+		emitter.fire();
+		assert.equal(counter.count, 3);
+
+		listener.dispose();
+	});
+
+	test('should buffer when wrapped', () => {
+		const bufferer = new EventBufferer();
+		const counter = new Samples.EventCounter();
+		const emitter = new Emitter<void>();
+		const event = bufferer.wrapEvent(emitter.event);
+		const listener = event(counter.onEvent, counter);
+
+		assert.equal(counter.count, 0);
+		emitter.fire();
+		assert.equal(counter.count, 1);
+
+		bufferer.bufferEvents(() => {
+			emitter.fire();
+			assert.equal(counter.count, 1);
+			emitter.fire();
+			assert.equal(counter.count, 1);
+		});
+
+		assert.equal(counter.count, 3);
+		emitter.fire();
+		assert.equal(counter.count, 4);
+
+		listener.dispose();
+	});
+
+	test('once', () => {
+		const emitter = new Emitter<void>();
+
+		let counter1 = 0, counter2 = 0, counter3 = 0;
+
+		const listener1 = emitter.event(() => counter1++);
+		const listener2 = once(emitter.event)(() => counter2++);
+		const listener3 = once(emitter.event)(() => counter3++);
+
+		assert.equal(counter1, 0);
+		assert.equal(counter2, 0);
+		assert.equal(counter3, 0);
+
+		listener3.dispose();
+		emitter.fire();
+		assert.equal(counter1, 1);
+		assert.equal(counter2, 1);
+		assert.equal(counter3, 0);
+
+		emitter.fire();
+		assert.equal(counter1, 2);
+		assert.equal(counter2, 1);
+		assert.equal(counter3, 0);
+
+		listener1.dispose();
+		listener2.dispose();
 	});
 });

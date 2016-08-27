@@ -10,8 +10,11 @@ import extfs = require('vs/base/node/extfs');
 import paths = require('vs/base/common/paths');
 import { dirname, join } from 'path';
 import { nfcall } from 'vs/base/common/async';
-
 import fs = require('fs');
+
+export function isRoot(path: string): boolean {
+	return path === dirname(path);
+}
 
 export function readdir(path: string): TPromise<string[]> {
 	return nfcall(extfs.readdir, path);
@@ -30,13 +33,17 @@ export function mkdirp(path: string, mode?: number): TPromise<boolean> {
 		.then(null, (err: NodeJS.ErrnoException) => {
 			if (err.code === 'EEXIST') {
 				return nfcall(fs.stat, path)
-					.then((stat: fs.Stats) => stat.isDirectory
+					.then((stat:fs.Stats) => stat.isDirectory
 						? null
 						: Promise.wrapError(new Error(`'${ path }' exists and is not a directory.`)));
 			}
 
 			return TPromise.wrapError<boolean>(err);
 		});
+
+	if (isRoot(path)) {
+		return TPromise.as(true);
+	}
 
 	return mkdir().then(null, (err: NodeJS.ErrnoException) => {
 		if (err.code === 'ENOENT') {
@@ -48,8 +55,8 @@ export function mkdirp(path: string, mode?: number): TPromise<boolean> {
 }
 
 export function rimraf(path: string): TPromise<void> {
-	return stat(path).then(stat => {
-		if (stat.isDirectory()) {
+	return lstat(path).then(stat => {
+		if (stat.isDirectory() && !stat.isSymbolicLink()) {
 			return readdir(path)
 				.then(children => TPromise.join(children.map(child => rimraf(join(path, child)))))
 				.then(() => rmdir(path));
@@ -73,6 +80,10 @@ export function stat(path: string): TPromise<fs.Stats> {
 	return nfcall(fs.stat, path);
 }
 
+export function lstat(path: string): TPromise<fs.Stats> {
+	return nfcall(fs.lstat, path);
+}
+
 export function mstat(paths: string[]): TPromise<{ path: string; stats: fs.Stats; }> {
 	return doStatMultiple(paths.slice(0));
 }
@@ -89,8 +100,16 @@ export function unlink(path: string): Promise {
 	return nfcall(fs.unlink, path);
 }
 
+export function symlink(target: string, path: string, type?: string): TPromise<void> {
+	return nfcall<void>(fs.symlink, target, path, type);
+}
+
+export function readlink(path: string): TPromise<string> {
+	return nfcall<string>(fs.readlink, path);
+}
+
 function doStatMultiple(paths: string[]): TPromise<{ path: string; stats: fs.Stats; }> {
-	var path = paths.shift();
+	let path = paths.shift();
 	return stat(path).then((value) => {
 		return {
 			path: path,
@@ -114,6 +133,12 @@ export function writeFile(path: string, data: string, encoding?: string): Promis
 export function writeFile(path: string, data: NodeBuffer, encoding?: string): Promise;
 export function writeFile(path: string, data: any, encoding: string = 'utf8'): Promise {
 	return nfcall(fs.writeFile, path, data, encoding);
+}
+
+export function writeFileAndFlush(path: string, data: string, encoding?: string): Promise;
+export function writeFileAndFlush(path: string, data: NodeBuffer, encoding?: string): Promise;
+export function writeFileAndFlush(path: string, data: any, encoding: string = 'utf8'): Promise {
+	return nfcall(extfs.writeFileAndFlush, path, data, encoding);
 }
 
 /**
@@ -174,6 +199,13 @@ export function fileExistsWithResult<T>(path: string, successResult: T): TPromis
 	});
 }
 
+export function existsWithResult<T>(path: string, successResult: T): TPromise<T> {
+	return exists(path).then((exists) => {
+		return exists ? successResult : null;
+	}, (err) => {
+		return TPromise.wrapError(err);
+	});
+}
 
 function removeNull<T>(arr: T[]): T[] {
 	return arr.filter(item => (item !== null));

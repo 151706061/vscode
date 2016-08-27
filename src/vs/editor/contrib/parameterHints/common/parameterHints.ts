@@ -5,7 +5,27 @@
 
 'use strict';
 
-import {IParameterHintsSupport} from 'vs/editor/common/modes';
-import LanguageFeatureRegistry from 'vs/editor/common/modes/languageFeatureRegistry';
+import { TPromise } from 'vs/base/common/winjs.base';
+import { IReadOnlyModel } from 'vs/editor/common/editorCommon';
+import { CommonEditorRegistry } from 'vs/editor/common/editorCommonExtensions';
+import { SignatureHelp, SignatureHelpProviderRegistry } from 'vs/editor/common/modes';
+import { asWinJsPromise } from 'vs/base/common/async';
+import { Position } from 'vs/editor/common/core/position';
+import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
 
-export const ParameterHintsRegistry = new LanguageFeatureRegistry<IParameterHintsSupport>('parameterHintsSupport');
+export const Context = {
+	Visible: new RawContextKey<boolean>('parameterHintsVisible', false),
+	MultipleSignatures: new RawContextKey<boolean>('parameterHintsMultipleSignatures', false),
+};
+
+export function provideSignatureHelp(model:IReadOnlyModel, position:Position): TPromise<SignatureHelp> {
+	const support = SignatureHelpProviderRegistry.ordered(model)[0];
+
+	if (!support) {
+		return TPromise.as(undefined);
+	}
+
+	return asWinJsPromise(token => support.provideSignatureHelp(model, position, token));
+}
+
+CommonEditorRegistry.registerDefaultLanguageCommand('_executeSignatureHelpProvider', provideSignatureHelp);

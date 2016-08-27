@@ -4,38 +4,97 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import nls = require('vs/nls');
-import {CommonEditorRegistry, ContextKey, EditorActionDescriptor} from 'vs/editor/common/editorCommonExtensions';
-import {HandlerEditorAction} from 'vs/editor/common/editorAction';
-import EditorCommon = require('vs/editor/common/editorCommon');
-import {INullService} from 'vs/platform/instantiation/common/instantiation';
-import {KeyMod, KeyCode} from 'vs/base/common/keyCodes';
+import * as nls from 'vs/nls';
+import {KeyCode, KeyMod} from 'vs/base/common/keyCodes';
+import {Handler, ICommonCodeEditor, EditorContextKeys, ISelection} from 'vs/editor/common/editorCommon';
+import {editorAction, ServicesAccessor, EditorAction, HandlerEditorAction} from 'vs/editor/common/editorCommonExtensions';
 
+@editorAction
 class InsertCursorAbove extends HandlerEditorAction {
-	static ID = 'editor.action.insertCursorAbove';
-
-	constructor(descriptor:EditorCommon.IEditorActionDescriptorData, editor:EditorCommon.ICommonCodeEditor, @INullService ns) {
-		super(descriptor, editor, EditorCommon.Handler.AddCursorUp);
+	constructor() {
+		super({
+			id: 'editor.action.insertCursorAbove',
+			label: nls.localize('mutlicursor.insertAbove', "Add Cursor Above"),
+			alias: 'Add Cursor Above',
+			precondition: null,
+			handlerId: Handler.AddCursorUp,
+			kbOpts: {
+				kbExpr: EditorContextKeys.TextFocus,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.UpArrow,
+				linux: {
+					primary: KeyMod.Shift | KeyMod.Alt | KeyCode.UpArrow,
+					secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.UpArrow]
+				}
+			}
+		});
 	}
 }
 
+@editorAction
 class InsertCursorBelow extends HandlerEditorAction {
-	static ID = 'editor.action.insertCursorBelow';
-
-	constructor(descriptor:EditorCommon.IEditorActionDescriptorData, editor:EditorCommon.ICommonCodeEditor, @INullService ns) {
-		super(descriptor, editor, EditorCommon.Handler.AddCursorDown);
+	constructor() {
+		super({
+			id: 'editor.action.insertCursorBelow',
+			label: nls.localize('mutlicursor.insertBelow', "Add Cursor Below"),
+			alias: 'Add Cursor Below',
+			precondition: null,
+			handlerId: Handler.AddCursorDown,
+			kbOpts: {
+				kbExpr: EditorContextKeys.TextFocus,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.DownArrow,
+				linux: {
+					primary: KeyMod.Shift | KeyMod.Alt | KeyCode.DownArrow,
+					secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.DownArrow]
+				}
+			}
+		});
 	}
 }
 
+@editorAction
+class InsertCursorAtEndOfEachLineSelected extends EditorAction {
 
-// register actions
-CommonEditorRegistry.registerEditorAction(new EditorActionDescriptor(InsertCursorAbove, InsertCursorAbove.ID, nls.localize('mutlicursor.insertAbove', "Insert Cursor Above"), {
-	context: ContextKey.EditorTextFocus,
-	primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.UpArrow,
-	linux: { primary: KeyMod.CtrlCmd| KeyMod.WinCtrl | KeyCode.UpArrow }
-}));
-CommonEditorRegistry.registerEditorAction(new EditorActionDescriptor(InsertCursorBelow, InsertCursorBelow.ID, nls.localize('mutlicursor.insertBelow', "Insert Cursor Below"), {
-	context: ContextKey.EditorTextFocus,
-	primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.DownArrow,
-	linux: { primary: KeyMod.CtrlCmd| KeyMod.WinCtrl | KeyCode.DownArrow }
-}));
+	constructor() {
+		super({
+			id: 'editor.action.insertCursorAtEndOfEachLineSelected',
+			label: nls.localize('mutlicursor.insertAtEndOfEachLineSelected', "Create Multiple Cursors from Selected Lines"),
+			alias: 'Create Multiple Cursors from Selected Lines',
+			precondition: null,
+			kbOpts: {
+				kbExpr: EditorContextKeys.TextFocus,
+				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KEY_I
+			}
+		});
+	}
+
+	public run(accessor:ServicesAccessor, editor:ICommonCodeEditor): void {
+		let selection = editor.getSelection();
+		if (selection.isEmpty()) {
+			return;
+		}
+
+		let model = editor.getModel();
+		let newSelections = new Array<ISelection>();
+		let selectionStart = selection.getStartPosition();
+		let selectionEnd = selection.getEndPosition();
+		for (var i = selectionStart.lineNumber; i <= selectionEnd.lineNumber; i++) {
+			if(i !== selectionEnd.lineNumber) {
+				let currentLineMaxColumn = model.getLineMaxColumn(i);
+				newSelections.push({
+					selectionStartLineNumber: i,
+					selectionStartColumn: currentLineMaxColumn,
+					positionLineNumber: i,
+					positionColumn: currentLineMaxColumn
+				});
+			} else if( selectionEnd.column > 0 ) {
+				newSelections.push({
+					selectionStartLineNumber: selectionEnd.lineNumber,
+					selectionStartColumn: selectionEnd.column,
+					positionLineNumber: selectionEnd.lineNumber,
+					positionColumn: selectionEnd.column
+				});
+			}
+		}
+		editor.setSelections(newSelections);
+	}
+}

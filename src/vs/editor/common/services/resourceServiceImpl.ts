@@ -4,35 +4,48 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {EventEmitter, IEmitterEvent, ListenerUnbind, ListenerCallback} from 'vs/base/common/eventEmitter';
-import EditorCommon = require('vs/editor/common/editorCommon');
-import {IResourceService, ResourceEvents, IResourceChangedEvent, IResourceAddedEvent, IResourceRemovedEvent} from 'vs/editor/common/services/resourceService';
-import {URL} from 'vs/base/common/network';
-import {IDisposable} from 'vs/base/common/lifecycle';
+import URI from 'vs/base/common/uri';
+import {IMirrorModel} from 'vs/editor/common/editorCommon';
+import {IResourceService} from 'vs/editor/common/services/resourceService';
 
-export class ResourceService extends EventEmitter implements IResourceService {
-	public serviceId = IResourceService;
-	private data:{[url:string]:EditorCommon.IMirrorModel;};
-	private unbinds:{[url:string]:ListenerUnbind[];};
+class MirrorModelMap {
+
+	private _data: {[key:string]:IMirrorModel};
 
 	constructor() {
-		super();
-		this.data = {};
-		this.unbinds = {};
+		this._data = {};
 	}
 
-	public addListener_(eventType: string, listener: ListenerCallback): ListenerUnbind {
-		return super.addListener(eventType, listener);
+	public set(key:string, data:IMirrorModel): void {
+		this._data[key] = data;
 	}
 
-	public addListener2_(eventType: string, listener: ListenerCallback): IDisposable {
-		return super.addListener2(eventType, listener);
+	public get(key:string): IMirrorModel {
+		return this._data[key] || null;
 	}
 
-	private _anonymousModelId(input:string): string {
-		var r = '';
-		for (var i = 0; i < input.length; i++) {
-			var ch = input[i];
+	public contains(key:string): boolean {
+		return !!this._data[key];
+	}
+
+	public remove(key:string): void {
+		delete this._data[key];
+	}
+}
+
+export class ResourceService implements IResourceService {
+	public _serviceBrand: any;
+
+	private _map:MirrorModelMap;
+
+	constructor() {
+		this._map = new MirrorModelMap();
+	}
+
+	private static _anonymousModelId(input:string): string {
+		let r = '';
+		for (let i = 0; i < input.length; i++) {
+			let ch = input[i];
 			if (ch >= '0' && ch <= '9') {
 				r += '0';
 				continue;
@@ -50,60 +63,25 @@ export class ResourceService extends EventEmitter implements IResourceService {
 		return r;
 	}
 
-	public insert(url:URL, element:EditorCommon.IMirrorModel): void {
-		// console.log('INSERT: ' + url.toString());
-		if (this.contains(url)) {
+	public insert(uri:URI, element:IMirrorModel): void {
+		let key = uri.toString();
+
+		if (this._map.contains(key)) {
 			// There already exists a model with this id => this is a programmer error
-			throw new Error('ResourceService: Cannot add model ' + this._anonymousModelId(url.toString()) + ' because it already exists!');
+			throw new Error('ResourceService: Cannot add model ' + ResourceService._anonymousModelId(key) + ' because it already exists!');
 		}
-
-		// add resource
-		var key = url.toString();
-		this.data[key] = element;
-		this.unbinds[key] = [];
-		this.unbinds[key].push(element.addBulkListener((value:IEmitterEvent[]) => {
-			this.emit(ResourceEvents.CHANGED, <IResourceChangedEvent>{ url: url, originalEvents: value });
-		}));
-
-		// event
-		this.emit(ResourceEvents.ADDED, <IResourceAddedEvent>{ url: url, addedElement: element });
+		this._map.set(key, element);
 	}
 
-	public get(url:URL):EditorCommon.IMirrorModel {
-		if(!this.data[url.toString()]) {
-			return null;
-		}
-		return this.data[url.toString()];
+	public get(uri:URI):IMirrorModel {
+		let key = uri.toString();
+
+		return this._map.get(key);
 	}
 
-	public all():EditorCommon.IMirrorModel[] {
-		return Object.keys(this.data).map((key) => {
-			return this.data[key];
-		});
-	}
+	public remove(uri:URI):void {
+		let key = uri.toString();
 
-	public contains(url:URL):boolean {
-		return !!this.data[url.toString()];
-	}
-
-	public remove(url:URL):void {
-		// console.log('REMOVE: ' + url.toString());
-		if(!this.contains(url)) {
-			return;
-		}
-
-		var key = url.toString(),
-			element = this.data[key],
-			i = 1;
-
-		// stop listen
-		while(this.unbinds[key].length > 0) { this.unbinds[key].pop()(); }
-
-		// removal
-		delete this.unbinds[key];
-		delete this.data[key];
-
-		// event
-		this.emit(ResourceEvents.REMOVED, <IResourceRemovedEvent>{ url: url, removedElement: element });
+		this._map.remove(key);
 	}
 }

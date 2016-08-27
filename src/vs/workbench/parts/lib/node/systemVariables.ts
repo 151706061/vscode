@@ -4,31 +4,37 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import { IStringDictionary } from 'vs/base/common/collections';
-
 import * as Paths from 'vs/base/common/paths';
-import * as Platform from 'vs/base/common/platform';
 import URI from 'vs/base/common/uri';
 import { AbstractSystemVariables } from 'vs/base/common/parsers';
 
 import * as WorkbenchEditorCommon from 'vs/workbench/common/editor';
 
 import { IWorkbenchEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { IWorkspaceContextService } from 'vs/workbench/services/workspace/common/contextService';
+import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
+import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 
 export class SystemVariables extends AbstractSystemVariables {
 	private _workspaceRoot: string;
-	private _cwd: string;
 	private _execPath: string;
 
 	// Optional workspaceRoot there to be used in tests.
-	constructor(private editorService: IWorkbenchEditorService, contextService: IWorkspaceContextService, workspaceRoot: URI = null) {
+	constructor(
+		private editorService: IWorkbenchEditorService,
+		contextService: IWorkspaceContextService,
+		environmentService: IEnvironmentService,
+		workspaceRoot: URI = null,
+		envVariables: { [key: string]: string } = process.env
+	) {
 		super();
-		var fsPath = workspaceRoot ? workspaceRoot.fsPath : contextService.getWorkspace().resource.fsPath;
+		let fsPath = '';
+		if (workspaceRoot || (contextService && contextService.getWorkspace())) {
+			fsPath = workspaceRoot ? workspaceRoot.fsPath : contextService.getWorkspace().resource.fsPath;
+		}
 		this._workspaceRoot = Paths.normalize(fsPath, true);
-		this._execPath = contextService ? contextService.getConfiguration().env.execPath : null;
-		Object.keys(process.env).forEach(key => {
-			this[`env.${ key }`] = process.env[key];
+		this._execPath = environmentService.execPath;
+		Object.keys(envVariables).forEach(key => {
+			this[`env.${key}`] = envVariables[key];
 		});
 	}
 
@@ -50,6 +56,10 @@ export class SystemVariables extends AbstractSystemVariables {
 
 	public get file(): string {
 		return this.getFilePath();
+	}
+
+	public get relativeFile(): string {
+		return (this.workspaceRoot) ? Paths.relative(this.workspaceRoot, this.file) : this.file;
 	}
 
 	public get fileBasename(): string {

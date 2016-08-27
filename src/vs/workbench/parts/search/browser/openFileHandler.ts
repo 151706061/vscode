@@ -4,28 +4,26 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import {TPromise, Promise, PPromise} from 'vs/base/common/winjs.base';
+import {TPromise} from 'vs/base/common/winjs.base';
+import errors = require('vs/base/common/errors');
 import nls = require('vs/nls');
-import {ThrottledDelayer} from 'vs/base/common/async';
 import paths = require('vs/base/common/paths');
 import labels = require('vs/base/common/labels');
-import strings = require('vs/base/common/strings');
+import * as objects from 'vs/base/common/objects';
+import uuid = require('vs/base/common/uuid');
 import URI from 'vs/base/common/uri';
 import {IRange} from 'vs/editor/common/editorCommon';
-import {IAutoFocus} from 'vs/base/parts/quickopen/browser/quickOpen';
-import {QuickOpenEntry, QuickOpenModel, IHighlight} from 'vs/base/parts/quickopen/browser/quickOpenModel';
-import filters = require('vs/base/common/filters');
-import comparers = require('vs/base/common/comparers');
+import {IAutoFocus} from 'vs/base/parts/quickopen/common/quickOpen';
+import {QuickOpenEntry, QuickOpenModel} from 'vs/base/parts/quickopen/browser/quickOpenModel';
 import {QuickOpenHandler, EditorQuickOpenEntry} from 'vs/workbench/browser/quickopen';
-import {FileMatch, SearchResult} from 'vs/workbench/parts/search/common/searchModel';
 import {QueryBuilder} from 'vs/workbench/parts/search/common/searchQuery';
-import {ITextFileService} from 'vs/workbench/parts/files/common/files';
-import {EditorInput} from 'vs/workbench/common/editor';
-import {IWorkbenchEditorService, IFileInput} from 'vs/workbench/services/editor/common/editorService';
+import {EditorInput, getOutOfWorkspaceEditorResources, IWorkbenchEditorConfiguration} from 'vs/workbench/common/editor';
+import {IEditorGroupService} from 'vs/workbench/services/group/common/groupService';
+import {IResourceInput} from 'vs/platform/editor/common/editor';
+import {IWorkbenchEditorService} from 'vs/workbench/services/editor/common/editorService';
 import {IConfigurationService} from 'vs/platform/configuration/common/configuration';
 import {IInstantiationService} from 'vs/platform/instantiation/common/instantiation';
-import {IMessageService} from 'vs/platform/message/common/message';
-import {IQueryOptions, ISearchService, ISearchComplete, ISearchProgressItem} from 'vs/platform/search/common/search';
+import {IQueryOptions, ISearchService, ISearchStats, ISearchQuery} from 'vs/platform/search/common/search';
 import {IWorkspaceContextService} from 'vs/platform/workspace/common/workspace';
 
 export class FileEntry extends EditorQuickOpenEntry {
@@ -34,21 +32,28 @@ export class FileEntry extends EditorQuickOpenEntry {
 	private resource: URI;
 	private range: IRange;
 
-	constructor(name: string, resource: URI, highlights: IHighlight[],
+	constructor(
+		name: string,
+		description: string,
+		resource: URI,
 		@IWorkbenchEditorService editorService: IWorkbenchEditorService,
 		@IInstantiationService private instantiationService: IInstantiationService,
+		@IConfigurationService private configurationService: IConfigurationService,
 		@IWorkspaceContextService contextService: IWorkspaceContextService
 	) {
 		super(editorService);
 
 		this.resource = resource;
 		this.name = name;
-		this.description = labels.getPathLabel(paths.dirname(this.resource.fsPath), contextService);
-		this.setHighlights(highlights);
+		this.description = description;
 	}
 
 	public getLabel(): string {
 		return this.name;
+	}
+
+	public getAriaLabel(): string {
+		return nls.localize('entryAriaLabel', "{0}, file picker", this.getLabel());
 	}
 
 	public getDescription(): string {
@@ -67,15 +72,16 @@ export class FileEntry extends EditorQuickOpenEntry {
 		this.range = range;
 	}
 
-	public getInput(): IFileInput | EditorInput {
-		let input: IFileInput = {
+	public getInput(): IResourceInput | EditorInput {
+		let input: IResourceInput = {
 			resource: this.resource,
+			options: {
+				pinned: !this.configurationService.getConfiguration<IWorkbenchEditorConfiguration>().workbench.editor.enablePreviewFromQuickOpen
+			}
 		};
 
 		if (this.range) {
-			input.options = {
-				selection: this.range
-			};
+			input.options.selection = this.range;
 		}
 
 		return input;
@@ -84,112 +90,87 @@ export class FileEntry extends EditorQuickOpenEntry {
 
 export class OpenFileHandler extends QuickOpenHandler {
 
-	private static SEARCH_DELAY = 500; // This delay acommodates for the user typing a word and then stops typing to start searching
-
 	private queryBuilder: QueryBuilder;
-	private delayer: ThrottledDelayer;
-	private isStandalone: boolean;
-	private pendingSearch: PPromise<ISearchComplete, ISearchProgressItem>
+	private cacheState: CacheState;
 
 	constructor(
-		@IWorkbenchEditorService private editorService: IWorkbenchEditorService,
-		@IMessageService private messageService: IMessageService,
+		@IEditorGroupService private editorGroupService: IEditorGroupService,
 		@IInstantiationService private instantiationService: IInstantiationService,
-		@IConfigurationService private configurationService: IConfigurationService,
 		@IWorkspaceContextService private contextService: IWorkspaceContextService,
-		@ITextFileService private textFileService: ITextFileService,
 		@ISearchService private searchService: ISearchService
 	) {
 		super();
 
 		this.queryBuilder = this.instantiationService.createInstance(QueryBuilder);
-		this.delayer = new ThrottledDelayer(OpenFileHandler.SEARCH_DELAY);
-		this.isStandalone = true;
-	}
-
-	public setStandalone(standalone: boolean) {
-		this.delayer = standalone ? new ThrottledDelayer(OpenFileHandler.SEARCH_DELAY) : null;
-		this.isStandalone = standalone;
 	}
 
 	public getResults(searchValue: string): TPromise<QuickOpenModel> {
+		return this.getResultsWithStats(searchValue)
+			.then(result => result[0]);
+	}
+
+	public getResultsWithStats(searchValue: string, maxSortedResults?: number): TPromise<[QuickOpenModel, ISearchStats]> {
 		searchValue = searchValue.trim();
-		let promise: TPromise<QuickOpenEntry[]>;
+		let promise: TPromise<[QuickOpenEntry[], ISearchStats]>;
 
 		// Respond directly to empty search
 		if (!searchValue) {
-			promise = TPromise.as([]);
-		} else if (this.delayer) {
-			promise = this.delayer.trigger(() => this.doFindResults(searchValue)); // Run search with delay as needed
+			promise = TPromise.as(<[QuickOpenEntry[], ISearchStats]>[[], undefined]);
 		} else {
-			promise = this.doFindResults(searchValue);
+			promise = this.doFindResults(searchValue, this.cacheState.cacheKey, maxSortedResults);
 		}
 
-		return promise.then(e => new QuickOpenModel(e));
+		return promise.then(result => [new QuickOpenModel(result[0]), result[1]]);
 	}
 
-	private doFindResults(searchValue: string): TPromise<QuickOpenEntry[]> {
-
-		// clear previous searches if still running
-		this.cancelPendingSearch();
-
-		let rootResources = this.textFileService.getWorkingFilesModel().getOutOfWorkspaceContextEntries().map((e) => e.resource);
-		if (this.contextService.getWorkspace()) {
-			rootResources.push(this.contextService.getWorkspace().resource);
+	private doFindResults(searchValue: string, cacheKey?: string, maxSortedResults?: number): TPromise<[QuickOpenEntry[], ISearchStats]> {
+		const query: IQueryOptions = {
+			folderResources: this.contextService.getWorkspace() ? [this.contextService.getWorkspace().resource] : [],
+			extraFileResources: getOutOfWorkspaceEditorResources(this.editorGroupService, this.contextService),
+			filePattern: searchValue,
+			cacheKey: cacheKey
+		};
+		if (typeof maxSortedResults === 'number') {
+			query.maxResults = maxSortedResults;
+			query.sortByScore = true;
 		}
 
-		let query: IQueryOptions = { filePatterns: [{ pattern: searchValue }], rootResources: rootResources };
-
-		return this.queryBuilder.file(query).then((query) => {
-			this.pendingSearch = this.searchService.search(query);
-
-			return this.pendingSearch;
-		}).then((complete) => {
-			this.pendingSearch = null;
-
-			let searchResult = this.instantiationService.createInstance(SearchResult, null);
-			searchResult.append(complete.results);
-
+		return this.searchService.search(this.queryBuilder.file(query)).then((complete) => {
 			let results: QuickOpenEntry[] = [];
+			for (let i = 0; i < complete.results.length; i++) {
+				let fileMatch = complete.results[i];
 
-			// Sort (standalone only)
-			let matches = searchResult.matches();
-			if (this.isStandalone) {
-				matches = matches.sort((elementA, elementB) => this.sort(elementA, elementB, searchValue.toLowerCase()));
+				let label = paths.basename(fileMatch.resource.fsPath);
+				let description = labels.getPathLabel(paths.dirname(fileMatch.resource.fsPath), this.contextService);
+
+				results.push(this.instantiationService.createInstance(FileEntry, label, description, fileMatch.resource));
 			}
 
-			// Highlight
-			for (let i = 0; i < matches.length; i++) {
-				let fileMatch = matches[i];
-				let highlights = filters.matchesFuzzy(searchValue, fileMatch.name());
-
-				results.push(this.instantiationService.createInstance(FileEntry, fileMatch.name(), fileMatch.resource(), highlights));
-			}
-
-			return results;
+			return [results, complete.stats];
 		});
 	}
 
-	private sort(elementA: FileMatch, elementB: FileMatch, searchValue: string): number {
-		let elementAName = elementA.name().toLowerCase();
-		let elementBName = elementB.name().toLowerCase();
+	public onOpen(): void {
+		this.cacheState = new CacheState(cacheKey => this.cacheQuery(cacheKey), query => this.searchService.search(query), cacheKey => this.searchService.clearCache(cacheKey), this.cacheState);
+		this.cacheState.load();
+	}
 
-		// Sort matches that have search value in beginning to the top
-		let elementAPrefixMatch = elementAName.indexOf(searchValue) === 0;
-		let elementBPrefixMatch = elementBName.indexOf(searchValue) === 0;
-		if (elementAPrefixMatch !== elementBPrefixMatch) {
-			return elementAPrefixMatch ? -1 : 1;
-		}
+	private cacheQuery(cacheKey: string): ISearchQuery {
+		const options: IQueryOptions = {
+			folderResources: this.contextService.getWorkspace() ? [this.contextService.getWorkspace().resource] : [],
+			extraFileResources: [],
+			filePattern: '',
+			cacheKey: cacheKey,
+			maxResults: 0,
+			sortByScore: true
+		};
+		const query = this.queryBuilder.file(options);
+		this.searchService.extendQuery(query);
+		return query;
+	}
 
-		// Compare by name
-
-		let r = comparers.compareFileNames(elementAName, elementBName);
-		if (r !== 0) {
-			return r;
-		}
-
-		// Otherwise do full compare with path info
-		return strings.localeCompare(elementA.resource().fsPath, elementB.resource().fsPath);
+	public get isCacheLoaded(): boolean {
+		return this.cacheState && this.cacheState.isLoaded;
 	}
 
 	public getGroupLabel(): string {
@@ -201,15 +182,61 @@ export class OpenFileHandler extends QuickOpenHandler {
 			autoFocusFirstEntry: true
 		};
 	}
+}
 
-	private cancelPendingSearch(): void {
-		if (this.pendingSearch) {
-			this.pendingSearch.cancel();
-			this.pendingSearch = null;
+class CacheState {
+
+	public query: ISearchQuery;
+
+	private _cacheKey = uuid.generateUuid();
+	private _isLoaded = false;
+
+	private promise: TPromise<void>;
+
+	constructor (private cacheQuery: (cacheKey: string) => ISearchQuery, private doLoad: (query: ISearchQuery) => TPromise<any>, private doDispose: (cacheKey: string) => TPromise<void>, private previous: CacheState) {
+		this.query = cacheQuery(this._cacheKey);
+		if (this.previous) {
+			const current = objects.assign({}, this.query, { cacheKey: null });
+			const previous = objects.assign({}, this.previous.query, { cacheKey: null });
+			if (!objects.equals(current, previous)) {
+				this.previous.dispose();
+				this.previous = null;
+			}
 		}
 	}
 
-	public onClose(canceled: boolean): void {
-		this.cancelPendingSearch();
+	public get cacheKey(): string {
+		return this._isLoaded || !this.previous ? this._cacheKey : this.previous.cacheKey;
+	}
+
+	public get isLoaded(): boolean {
+		return this._isLoaded || !this.previous ? this._isLoaded : this.previous.isLoaded;
+	}
+
+	public load(): void {
+		this.promise = this.doLoad(this.query)
+			.then(() => {
+				this._isLoaded = true;
+				if (this.previous) {
+					this.previous.dispose();
+					this.previous = null;
+				}
+			}, err => {
+				console.error(errors.toErrorMessage(err));
+			});
+	}
+
+	public dispose(): void {
+		this.promise.then(null, () => {})
+			.then(() => {
+				this._isLoaded = false;
+				return this.doDispose(this._cacheKey);
+			}).then(null, err => {
+				console.error(errors.toErrorMessage(err));
+			});
+		if (this.previous) {
+			this.previous.dispose();
+			this.previous = null;
+		}
 	}
 }

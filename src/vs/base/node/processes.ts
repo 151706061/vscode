@@ -10,7 +10,7 @@ import ChildProcess = cp.ChildProcess;
 import exec = cp.exec;
 import spawn = cp.spawn;
 
-import { Writable, Readable, PassThrough } from 'stream';
+import { PassThrough } from 'stream';
 
 import { fork } from './stdFork';
 
@@ -24,8 +24,8 @@ import * as TPath from 'vs/base/common/paths';
 import * as Platform from 'vs/base/common/platform';
 
 import { LineDecoder } from 'vs/base/node/decoder';
-import { CommandOptions, ForkOptions, SuccessData, Source, TerminateResponse, Executable } from 'vs/base/common/processes';
-export { CommandOptions, ForkOptions, SuccessData, Source, TerminateResponse };
+import { CommandOptions, ForkOptions, SuccessData, Source, TerminateResponse, TerminateResponseCode, Executable } from 'vs/base/common/processes';
+export { CommandOptions, ForkOptions, SuccessData, Source, TerminateResponse, TerminateResponseCode };
 
 export interface LineData {
 	line: string;
@@ -43,26 +43,36 @@ export interface StreamData {
 	stderr: NodeJS.ReadableStream;
 }
 
+function getWindowsCode(status: number): TerminateResponseCode {
+	switch (status) {
+		case 0:
+			return TerminateResponseCode.Success;
+		case 1:
+			return TerminateResponseCode.AccessDenied;
+		case 128:
+			return TerminateResponseCode.ProcessNotFound;
+		default:
+			return TerminateResponseCode.Unknown;
+	}
+}
+
 export function terminateProcess(process: ChildProcess, cwd?: string): TerminateResponse {
 	if (Platform.isWindows) {
 		try {
-			// This we run in Electron execFileSync is available.
-			// Ignore stderr since this is otherwise piped to parent.stderr
-			// which might be already closed.
 			let options:any = {
 				stdio: ['pipe', 'pipe', 'ignore']
 			};
 			if (cwd) {
-				options.cwd = cwd
+				options.cwd = cwd;
 			}
-			(<any>cp).execFileSync('taskkill', ['/T', '/F', '/PID', process.pid.toString()], options);
+			cp.execFileSync('taskkill', ['/T', '/F', '/PID', process.pid.toString()], options);
 		} catch (err) {
-			return { success: false, error: err };
+			return { success: false, error: err , code: err.status ? getWindowsCode(err.status) : TerminateResponseCode.Unknown };
 		}
 	} else if (Platform.isLinux || Platform.isMacintosh) {
 		try {
-			var cmd = URI.parse(require.toUrl('vs/base/node/terminateProcess.sh')).fsPath;
-			var result = (<any>cp).spawnSync(cmd, [process.pid.toString()]);
+			let cmd = URI.parse(require.toUrl('vs/base/node/terminateProcess.sh')).fsPath;
+			let result = cp.spawnSync(cmd, [process.pid.toString()]);
 			if (result.error) {
 				return { success: false, error: result.error };
 			}
@@ -73,6 +83,10 @@ export function terminateProcess(process: ChildProcess, cwd?: string): Terminate
 		process.kill('SIGKILL');
 	}
 	return { success: true };
+}
+
+export function getWindowsShell(): string {
+	return process.env['comspec'] || 'cmd.exe';
 }
 
 export abstract class AbstractProcess<TProgressData> {
@@ -122,11 +136,11 @@ export abstract class AbstractProcess<TProgressData> {
 			this.shell = false;
 			this.options = <ForkOptions>arg3;
 		} else {
-			let exectuable = <Executable>arg1;
-			this.cmd = exectuable.command;
-			this.shell = exectuable.isShellCommand;
-			this.args = exectuable.args.slice(0);
-			this.options = exectuable.options || {};
+			let executable = <Executable>arg1;
+			this.cmd = executable.command;
+			this.shell = executable.isShellCommand;
+			this.args = executable.args.slice(0);
+			this.options = executable.options || {};
 		}
 
 		this.childProcess = null;
@@ -196,19 +210,7 @@ export abstract class AbstractProcess<TProgressData> {
 					let result: SuccessData = {
 						terminated: this.terminateRequested
 					};
-					if (this.shell && Platform.isWindows && Types.isNumber(data))  {
-						result.cmdCode = <number>data;
-					}
-					cc(result);
-				}
-				let exitHandler = (data: any) => {
-					this.childProcess = null;
-					this.childProcessPromise = null;
-					this.handleExit(data, cc, pp, ee);
-					let result: SuccessData = {
-						terminated: this.terminateRequested
-					};
-					if (this.shell && Platform.isWindows && Types.isNumber(data))  {
+					if (Types.isNumber(data))  {
 						result.cmdCode = <number>data;
 					}
 					cc(result);
@@ -236,7 +238,7 @@ export abstract class AbstractProcess<TProgressData> {
 					];
 					if (quotedCommand) {
 						if (quotedArg) {
-							args.push('"' + commandLine.join(' ') + '"')
+							args.push('"' + commandLine.join(' ') + '"');
 						} else if (commandLine.length > 1) {
 							args.push('"' + commandLine[0] + '"' + ' ' + commandLine.slice(1).join(' '));
 						} else {
@@ -245,7 +247,7 @@ export abstract class AbstractProcess<TProgressData> {
 					} else {
 						args.push(commandLine.join(' '));
 					}
-					childProcess = spawn('cmd.exe', args, options);
+					childProcess = spawn(getWindowsShell(), args, options);
 				} else {
 					if (this.cmd) {
 						childProcess = spawn(this.cmd, this.args, this.options);
@@ -259,7 +261,6 @@ export abstract class AbstractProcess<TProgressData> {
 								}
 								this.childProcess = childProcess;
 								this.childProcess.on('close', closeHandler);
-								this.childProcess.on('exit', exitHandler);
 								this.handleSpawn(childProcess, cc, pp, ee, false);
 								c(childProcess);
 							});
@@ -275,7 +276,6 @@ export abstract class AbstractProcess<TProgressData> {
 					});
 					if (childProcess.pid) {
 						this.childProcess.on('close', closeHandler);
-						this.childProcess.on('exit', exitHandler);
 						this.handleSpawn(childProcess, cc, pp, ee, true);
 					}
 				}
@@ -288,9 +288,6 @@ export abstract class AbstractProcess<TProgressData> {
 	protected abstract handleSpawn(childProcess: ChildProcess, cc: TValueCallback<SuccessData>, pp: TProgressCallback<TProgressData>, ee: ErrorCallback, sync: boolean): void;
 
 	protected handleClose(data: any, cc: TValueCallback<SuccessData>, pp: TProgressCallback<TProgressData>, ee: ErrorCallback): void {
-		// Default is to do nothing.
-	}
-	protected handleExit(data: any, cc: TValueCallback<SuccessData>, pp: TProgressCallback<TProgressData>, ee: ErrorCallback): void {
 		// Default is to do nothing.
 	}
 
@@ -329,7 +326,7 @@ export abstract class AbstractProcess<TProgressData> {
 			}
 			return result;
 		}, (err) => {
-			return { sucess: true };
+			return { success: true };
 		});
 	}
 
@@ -338,7 +335,7 @@ export abstract class AbstractProcess<TProgressData> {
 			if (!this.shell || !Platform.isWindows) {
 				c(false);
 			}
-			let cmdShell = spawn('cmd.exe', ['/s', '/c']);
+			let cmdShell = spawn(getWindowsShell(), ['/s', '/c']);
 			cmdShell.on('error', (error:Error) => {
 				c(true);
 			});
@@ -395,16 +392,6 @@ export class LineProcess extends AbstractProcess<LineData> {
 				pp({ line: line, source: index === 0 ? Source.stdout : Source.stderr });
 			}
 		});
-	}
-
-	protected handleExit(data: any, cc: TValueCallback<SuccessData>, pp: TProgressCallback<LineData>, ee: ErrorCallback): void {
-		if (this.terminateRequested) {
-			[this.stdoutLineDecoder.end(), this.stderrLineDecoder.end()].forEach((line, index) => {
-				if (line) {
-					pp({ line: line, source: index === 0 ? Source.stdout : Source.stderr });
-				}
-			});
-		}
 	}
 }
 

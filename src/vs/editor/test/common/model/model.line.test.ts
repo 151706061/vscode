@@ -4,27 +4,55 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import assert = require('assert');
-import ModelLine = require('vs/editor/common/model/modelLine');
-import Modes = require('vs/editor/common/modes');
-import TextModelWithTokens = require('vs/editor/common/model/textModelWithTokens');
-import EditorCommon = require('vs/editor/common/editorCommon');
+import * as assert from 'assert';
+import {ILineTokens} from 'vs/editor/common/editorCommon';
+import {ModelLine, ILineEdit, ILineMarker} from 'vs/editor/common/model/modelLine';
 import {LineMarker} from 'vs/editor/common/model/textModelWithMarkers';
+import {TokensInflatorMap} from 'vs/editor/common/model/tokensBinaryEncoding';
+import {IToken} from 'vs/editor/common/modes';
+import {LineToken} from 'vs/editor/common/model/lineToken';
 
-function assertLineTokens(actual:EditorCommon.ILineTokens, expected:Modes.IToken[]): void {
-	var inflatedActual = EditorCommon.LineTokensBinaryEncoding.inflateArr(actual.getBinaryEncodedTokensMap(), actual.getBinaryEncodedTokens());
+function assertLineTokens(actual:ILineTokens, expected:IToken[]): void {
+	var inflatedActual = actual.inflate();
 	assert.deepEqual(inflatedActual, expected, 'Line tokens are equal');
 }
 
-suite('Editor Model - ModelLine.applyEdits text', () => {
+const NO_TAB_SIZE = 0;
 
-	function testEdits(initial:string, edits:ModelLine.ILineEdit[], expected:string): void {
-		var line = new ModelLine.ModelLine(1, initial);
-		line.applyEdits({}, edits);
+suite('ModelLine - getIndentLevel', () => {
+	function assertIndentLevel(text:string, expected:number, tabSize:number = 4): void {
+		let modelLine = new ModelLine(1, text, tabSize);
+		let actual = modelLine.getIndentLevel();
+		assert.equal(actual, expected, text);
+	}
+
+	test('getIndentLevel', () => {
+		assertIndentLevel('', -1);
+		assertIndentLevel(' ', -1);
+		assertIndentLevel('   \t', -1);
+		assertIndentLevel('Hello', 0);
+		assertIndentLevel(' Hello', 1);
+		assertIndentLevel('   Hello', 3);
+		assertIndentLevel('\tHello', 4);
+		assertIndentLevel(' \tHello', 4);
+		assertIndentLevel('  \tHello', 4);
+		assertIndentLevel('   \tHello', 4);
+		assertIndentLevel('    \tHello', 8);
+		assertIndentLevel('     \tHello', 8);
+		assertIndentLevel('\t Hello', 5);
+		assertIndentLevel('\t \tHello', 8);
+	});
+});
+
+suite('Editor Model - modelLine.applyEdits text', () => {
+
+	function testEdits(initial:string, edits:ILineEdit[], expected:string): void {
+		var line = new ModelLine(1, initial, NO_TAB_SIZE);
+		line.applyEdits({}, edits, NO_TAB_SIZE);
 		assert.equal(line.text, expected);
 	}
 
-	function editOp(startColumn: number, endColumn: number, text:string): ModelLine.ILineEdit {
+	function editOp(startColumn: number, endColumn: number, text:string): ILineEdit {
 		return {
 			startColumn: startColumn,
 			endColumn: endColumn,
@@ -163,11 +191,11 @@ suite('Editor Model - ModelLine.applyEdits text', () => {
 	});
 });
 
-suite('Editor Model - ModelLine.split text', () => {
+suite('Editor Model - modelLine.split text', () => {
 
 	function testLineSplit(initial:string, splitColumn:number, expected1:string, expected2:string): void {
-		var line = new ModelLine.ModelLine(1, initial);
-		var newLine = line.split({}, splitColumn, false);
+		var line = new ModelLine(1, initial, NO_TAB_SIZE);
+		var newLine = line.split({}, splitColumn, false, NO_TAB_SIZE);
 		assert.equal(line.text, expected1);
 		assert.equal(newLine.text, expected2);
 	}
@@ -200,12 +228,12 @@ suite('Editor Model - ModelLine.split text', () => {
 	});
 });
 
-suite('Editor Model - ModelLine.append text', () => {
+suite('Editor Model - modelLine.append text', () => {
 
 	function testLineAppend(a:string, b:string, expected:string): void {
-		var line1 = new ModelLine.ModelLine(1, a);
-		var line2 = new ModelLine.ModelLine(2, b);
-		line1.append({}, line2);
+		var line1 = new ModelLine(1, a, NO_TAB_SIZE);
+		var line2 = new ModelLine(2, b, NO_TAB_SIZE);
+		line1.append({}, line2, NO_TAB_SIZE);
 		assert.equal(line1.text, expected);
 	}
 
@@ -234,40 +262,40 @@ suite('Editor Model - ModelLine.append text', () => {
 	});
 });
 
-suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
-	function testLineEditTokens(initialText:string, initialTokens: Modes.IToken[], edits:ModelLine.ILineEdit[], expectedText:string, expectedTokens: Modes.IToken[]): void {
-		var line = new ModelLine.ModelLine(1, initialText);
-		line.setTokens(new TextModelWithTokens.TokensInflatorMap(), initialTokens, null, []);
+suite('Editor Model - modelLine.applyEdits text & tokens', () => {
+	function testLineEditTokens(initialText:string, initialTokens: LineToken[], edits:ILineEdit[], expectedText:string, expectedTokens: LineToken[]): void {
+		let line = new ModelLine(1, initialText, NO_TAB_SIZE);
+		let map = new TokensInflatorMap();
+		line.setTokens(map, initialTokens, null, []);
 
-		line.applyEdits({}, edits);
+		line.applyEdits({}, edits, NO_TAB_SIZE);
 
 		assert.equal(line.text, expectedText);
-		assertLineTokens(line.getTokens(), expectedTokens);
+		assertLineTokens(line.getTokens(map), expectedTokens);
 	}
 
 	test('insertion on empty line', () => {
-		var line = new ModelLine.ModelLine(1, 'some text');
-		var map = new TextModelWithTokens.TokensInflatorMap();
-		line.setTokens(map, [{startIndex: 0, type:'bar', bracket:0}], null, []);
+		let line = new ModelLine(1, 'some text', NO_TAB_SIZE);
+		let map = new TokensInflatorMap();
+		line.setTokens(map, [new LineToken(0, 'bar')], null, []);
 
-		line.applyEdits({}, [{startColumn:1, endColumn:10, text:'', forceMoveMarkers: false}]);
+		line.applyEdits({}, [{startColumn:1, endColumn:10, text:'', forceMoveMarkers: false}], NO_TAB_SIZE);
 		line.setTokens(map, [], null, []);
 
-		line.applyEdits({}, [{startColumn:1, endColumn:1, text:'a', forceMoveMarkers: false}]);
-		assertLineTokens(line.getTokens(), [{
+		line.applyEdits({}, [{startColumn:1, endColumn:1, text:'a', forceMoveMarkers: false}], NO_TAB_SIZE);
+		assertLineTokens(line.getTokens(map), [{
 			startIndex: 0,
-			type:'',
-			bracket:0
+			type:''
 		}]);
-	})
+	});
 
 	test('updates tokens on insertion 1', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -277,9 +305,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'aabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 5, type: '2', bracket: 1 },
-				{ startIndex: 6, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(5, '2'),
+				new LineToken(6, '3')
 			]
 		);
 	});
@@ -288,9 +316,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'aabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 5, type: '2', bracket: 1 },
-				{ startIndex: 6, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(5, '2'),
+				new LineToken(6, '3')
 			],
 			[{
 				startColumn: 2,
@@ -300,9 +328,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'axabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 6, type: '2', bracket: 1 },
-				{ startIndex: 7, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(6, '2'),
+				new LineToken(7, '3')
 			]
 		);
 	});
@@ -311,9 +339,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'axabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 6, type: '2', bracket: 1 },
-				{ startIndex: 7, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(6, '2'),
+				new LineToken(7, '3')
 			],
 			[{
 				startColumn: 3,
@@ -323,9 +351,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'axstuabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 9, type: '2', bracket: 1 },
-				{ startIndex: 10, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(9, '2'),
+				new LineToken(10, '3')
 			]
 		);
 	});
@@ -334,9 +362,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'axstuabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 9, type: '2', bracket: 1 },
-				{ startIndex: 10, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(9, '2'),
+				new LineToken(10, '3')
 			],
 			[{
 				startColumn: 10,
@@ -346,9 +374,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'axstuabcd\t efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 11, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(11, '3')
 			]
 		);
 	});
@@ -357,9 +385,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'axstuabcd\t efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 11, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(11, '3')
 			],
 			[{
 				startColumn: 12,
@@ -369,9 +397,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'axstuabcd\t ddefgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 13, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(13, '3')
 			]
 		);
 	});
@@ -380,9 +408,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'axstuabcd\t ddefgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 13, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(13, '3')
 			],
 			[{
 				startColumn: 18,
@@ -392,9 +420,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'axstuabcd\t ddefghxyz',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 13, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(13, '3')
 			]
 		);
 	});
@@ -403,9 +431,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'axstuabcd\t ddefghxyz',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 10, type: '2', bracket: 1 },
-				{ startIndex: 13, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(10, '2'),
+				new LineToken(13, '3')
 			],
 			[{
 				startColumn: 1,
@@ -415,9 +443,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'xaxstuabcd\t ddefghxyz',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 11, type: '2', bracket: 1 },
-				{ startIndex: 14, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(11, '2'),
+				new LineToken(14, '3')
 			]
 		);
 	});
@@ -426,9 +454,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'xaxstuabcd\t ddefghxyz',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 11, type: '2', bracket: 1 },
-				{ startIndex: 14, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(11, '2'),
+				new LineToken(14, '3')
 			],
 			[{
 				startColumn: 22,
@@ -438,9 +466,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'xaxstuabcd\t ddefghxyzx',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 11, type: '2', bracket: 1 },
-				{ startIndex: 14, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(11, '2'),
+				new LineToken(14, '3')
 			]
 		);
 	});
@@ -449,9 +477,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'xaxstuabcd\t ddefghxyzx',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 11, type: '2', bracket: 1 },
-				{ startIndex: 14, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(11, '2'),
+				new LineToken(14, '3')
 			],
 			[{
 				startColumn: 2,
@@ -461,9 +489,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'xaxstuabcd\t ddefghxyzx',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 11, type: '2', bracket: 1 },
-				{ startIndex: 14, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(11, '2'),
+				new LineToken(14, '3')
 			]
 		);
 	});
@@ -480,7 +508,7 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'a',
 			[
-				{ startIndex: 0, type: '', bracket: 0 }
+				new LineToken(0, '')
 			]
 		);
 	});
@@ -489,9 +517,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcdefghij',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 3, type: '2', bracket: 1 },
-				{ startIndex: 6, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(3, '2'),
+				new LineToken(6, '3')
 			],
 			[{
 				startColumn: 4,
@@ -501,8 +529,8 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcghij',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 3, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(3, '3')
 			]
 		);
 	});
@@ -511,9 +539,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcdefghij',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 3, type: '2', bracket: 1 },
-				{ startIndex: 6, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(3, '2'),
+				new LineToken(6, '3')
 			],
 			[{
 				startColumn: 4,
@@ -523,9 +551,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abchellodefghij',
 			[
-				{ startIndex:  0, type: '1', bracket: 0 },
-				{ startIndex:  8, type: '2', bracket: 1 },
-				{ startIndex: 11, type: '3', bracket: -1 }
+				new LineToken( 0, '1'),
+				new LineToken( 8, '2'),
+				new LineToken(11, '3')
 			]
 		);
 	});
@@ -534,9 +562,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -546,9 +574,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'bcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 3, type: '2', bracket: 1 },
-				{ startIndex: 4, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(3, '2'),
+				new LineToken(4, '3')
 			]
 		);
 	});
@@ -557,9 +585,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 2,
@@ -569,9 +597,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'ad efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 2, type: '2', bracket: 1 },
-				{ startIndex: 3, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(2, '2'),
+				new LineToken(3, '3')
 			]
 		);
 	});
@@ -580,9 +608,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -592,8 +620,8 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			' efgh',
 			[
-				{ startIndex: 0, type: '2', bracket: 1 },
-				{ startIndex: 1, type: '3', bracket: -1 }
+				new LineToken(0, '2'),
+				new LineToken(1, '3')
 			]
 		);
 	});
@@ -602,9 +630,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 5,
@@ -614,8 +642,8 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcdefgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '3')
 			]
 		);
 	});
@@ -624,9 +652,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 5,
@@ -636,8 +664,8 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcdfgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '3')
 			]
 		);
 	});
@@ -646,9 +674,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 5,
@@ -658,7 +686,7 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcd',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 }
+				new LineToken(0, '1')
 			]
 		);
 	});
@@ -667,9 +695,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -686,9 +714,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -698,9 +726,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -709,9 +737,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 1,
@@ -721,9 +749,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'cd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 2, type: '2', bracket: 1 },
-				{ startIndex: 3, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(2, '2'),
+				new LineToken(3, '3')
 			]
 		);
 	});
@@ -732,9 +760,9 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			[{
 				startColumn: 5,
@@ -744,7 +772,7 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'abcd',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 }
+				new LineToken(0, '1')
 			]
 		);
 	});
@@ -753,11 +781,11 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'Hello world, ciao',
 			[
-				{ startIndex: 0, type: 'hello', bracket: 0 },
-				{ startIndex: 5, type: '', bracket: 0 },
-				{ startIndex: 6, type: 'world', bracket: 0 },
-				{ startIndex: 11, type: '', bracket: 0 },
-				{ startIndex: 13, type: '', bracket: 0 },
+				new LineToken(0, 'hello'),
+				new LineToken(5, ''),
+				new LineToken(6, 'world'),
+				new LineToken(11, ''),
+				new LineToken(13, '')
 			],
 			[{
 				startColumn: 1,
@@ -767,11 +795,11 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'Hi world, ciao',
 			[
-				{ startIndex: 0, type: 'hello', bracket: 0 },
-				{ startIndex: 2, type: '', bracket: 0 },
-				{ startIndex: 3, type: 'world', bracket: 0 },
-				{ startIndex: 8, type: '', bracket: 0 },
-				{ startIndex: 10, type: '', bracket: 0 },
+				new LineToken(0, 'hello'),
+				new LineToken(2, ''),
+				new LineToken(3, 'world'),
+				new LineToken(8, '' ),
+				new LineToken(10, '' ),
 			]
 		);
 	});
@@ -780,11 +808,11 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 		testLineEditTokens(
 			'Hello world, ciao',
 			[
-				{ startIndex: 0, type: 'hello', bracket: 0 },
-				{ startIndex: 5, type: '', bracket: 0 },
-				{ startIndex: 6, type: 'world', bracket: 0 },
-				{ startIndex: 11, type: '', bracket: 0 },
-				{ startIndex: 13, type: '', bracket: 0 },
+				new LineToken(0, 'hello'),
+				new LineToken(5, ''),
+				new LineToken(6, 'world'),
+				new LineToken(11, ''),
+				new LineToken(13, ''),
 			],
 			[{
 				startColumn: 1,
@@ -799,35 +827,36 @@ suite('Editor Model - ModelLine.applyEdits text & tokens', () => {
 			}],
 			'Hi wmy friends, ciao',
 			[
-				{ startIndex: 0, type: 'hello', bracket: 0 },
-				{ startIndex: 2, type: '', bracket: 0 },
-				{ startIndex: 3, type: 'world', bracket: 0 },
-				{ startIndex: 14, type: '', bracket: 0 },
-				{ startIndex: 16, type: '', bracket: 0 },
+				new LineToken(0, 'hello'),
+				new LineToken(2, ''),
+				new LineToken(3, 'world'),
+				new LineToken(14, ''),
+				new LineToken(16, ''),
 			]
 		);
 	});
 });
 
-suite('Editor Model - ModelLine.split text & tokens', () => {
-	function testLineSplitTokens(initialText:string, initialTokens: Modes.IToken[], splitColumn:number, expectedText1:string, expectedText2:string, expectedTokens: Modes.IToken[]): void {
-		var line = new ModelLine.ModelLine(1, initialText);
-		line.setTokens(new TextModelWithTokens.TokensInflatorMap(), initialTokens, null, []);
+suite('Editor Model - modelLine.split text & tokens', () => {
+	function testLineSplitTokens(initialText:string, initialTokens: LineToken[], splitColumn:number, expectedText1:string, expectedText2:string, expectedTokens: LineToken[]): void {
+		let line = new ModelLine(1, initialText, NO_TAB_SIZE);
+		let map = new TokensInflatorMap();
+		line.setTokens(map, initialTokens, null, []);
 
-		var other = line.split({}, splitColumn, false);
+		let other = line.split({}, splitColumn, false, NO_TAB_SIZE);
 
 		assert.equal(line.text, expectedText1);
 		assert.equal(other.text, expectedText2);
-		assertLineTokens(line.getTokens(), expectedTokens);
+		assertLineTokens(line.getTokens(map), expectedTokens);
 	}
 
 	test('split at the beginning', () => {
 		testLineSplitTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			1,
 			'',
@@ -840,17 +869,17 @@ suite('Editor Model - ModelLine.split text & tokens', () => {
 		testLineSplitTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			10,
 			'abcd efgh',
 			'',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -859,15 +888,15 @@ suite('Editor Model - ModelLine.split text & tokens', () => {
 		testLineSplitTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			5,
 			'abcd',
 			' efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 }
+				new LineToken(0, '1')
 			]
 		);
 	});
@@ -876,52 +905,52 @@ suite('Editor Model - ModelLine.split text & tokens', () => {
 		testLineSplitTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			6,
 			'abcd ',
 			'efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2')
 			]
 		);
 	});
 });
 
-suite('Editor Model - ModelLine.append text & tokens', () => {
-	function testLineAppendTokens(aText:string, aTokens: Modes.IToken[], bText:string, bTokens:Modes.IToken[], expectedText:string, expectedTokens:Modes.IToken[]): void {
-		var inflator = new TextModelWithTokens.TokensInflatorMap();
+suite('Editor Model - modelLine.append text & tokens', () => {
+	function testLineAppendTokens(aText:string, aTokens: LineToken[], bText:string, bTokens:LineToken[], expectedText:string, expectedTokens:IToken[]): void {
+		let inflator = new TokensInflatorMap();
 
-		var a = new ModelLine.ModelLine(1, aText);
+		let a = new ModelLine(1, aText, NO_TAB_SIZE);
 		a.setTokens(inflator, aTokens, null, []);
 
-		var b = new ModelLine.ModelLine(2, bText);
+		let b = new ModelLine(2, bText, NO_TAB_SIZE);
 		b.setTokens(inflator, bTokens, null, []);
 
-		a.append({}, b);
+		a.append({}, b, NO_TAB_SIZE);
 
 		assert.equal(a.text, expectedText);
-		assertLineTokens(a.getTokens(), expectedTokens);
+		assertLineTokens(a.getTokens(inflator), expectedTokens);
 	}
 
 	test('append empty 1', () => {
 		testLineAppendTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			'',
 			[],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -932,15 +961,15 @@ suite('Editor Model - ModelLine.append text & tokens', () => {
 			[],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -949,24 +978,24 @@ suite('Editor Model - ModelLine.append text & tokens', () => {
 		testLineAppendTokens(
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '4', bracket: 0 },
-				{ startIndex: 4, type: '5', bracket: 1 },
-				{ startIndex: 5, type: '6', bracket: -1 }
+				new LineToken(0, '4'),
+				new LineToken(4, '5'),
+				new LineToken(5, '6')
 			],
 			'abcd efghabcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 },
-				{ startIndex: 9, type: '4', bracket: 0 },
-				{ startIndex: 13, type: '5', bracket: 1 },
-				{ startIndex: 14, type: '6', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3'),
+				new LineToken(9, '4'),
+				new LineToken(13, '5'),
+				new LineToken(14, '6')
 			]
 		);
 	});
@@ -975,18 +1004,18 @@ suite('Editor Model - ModelLine.append text & tokens', () => {
 		testLineAppendTokens(
 			'abcd ',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2')
 			],
 			'efgh',
 			[
-				{ startIndex: 0, type: '3', bracket: -1 }
+				new LineToken(0, '3')
 			],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -995,18 +1024,18 @@ suite('Editor Model - ModelLine.append text & tokens', () => {
 		testLineAppendTokens(
 			'abcd',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
+				new LineToken(0, '1'),
 			],
 			' efgh',
 			[
-				{ startIndex: 0, type: '2', bracket: 1 },
-				{ startIndex: 1, type: '3', bracket: -1 }
+				new LineToken(0, '2'),
+				new LineToken(1, '3')
 			],
 			'abcd efgh',
 			[
-				{ startIndex: 0, type: '1', bracket: 0 },
-				{ startIndex: 4, type: '2', bracket: 1 },
-				{ startIndex: 5, type: '3', bracket: -1 }
+				new LineToken(0, '1'),
+				new LineToken(4, '2'),
+				new LineToken(5, '3')
 			]
 		);
 	});
@@ -1018,13 +1047,13 @@ interface ILightWeightMarker {
 	stickToPreviousCharacter: boolean;
 }
 
-suite('Editor Model - ModelLine.applyEdits text & markers', () => {
+suite('Editor Model - modelLine.applyEdits text & markers', () => {
 
 	function marker(id: number, column: number, stickToPreviousCharacter: boolean): LineMarker {
 		return new LineMarker(String(id), column, stickToPreviousCharacter);
 	}
 
-	function toLightWeightMarker(marker:ModelLine.ILineMarker): ILightWeightMarker {
+	function toLightWeightMarker(marker:ILineMarker): ILightWeightMarker {
 		return {
 			id: marker.id,
 			column: marker.column,
@@ -1032,20 +1061,20 @@ suite('Editor Model - ModelLine.applyEdits text & markers', () => {
 		};
 	}
 
-	function testLineEditMarkers(initialText:string, initialMarkers: LineMarker[], edits:ModelLine.ILineEdit[], expectedText:string, expectedChangedMarkers:number[], _expectedMarkers: LineMarker[]): void {
-		var line = new ModelLine.ModelLine(1, initialText);
+	function testLineEditMarkers(initialText:string, initialMarkers: LineMarker[], edits:ILineEdit[], expectedText:string, expectedChangedMarkers:number[], _expectedMarkers: LineMarker[]): void {
+		let line = new ModelLine(1, initialText, NO_TAB_SIZE);
 		line.addMarkers(initialMarkers);
 
-		var changedMarkers = Object.create(null);
-		line.applyEdits(changedMarkers, edits);
+		let changedMarkers = Object.create(null);
+		line.applyEdits(changedMarkers, edits, NO_TAB_SIZE);
 
 		assert.equal(line.text, expectedText, 'text');
 
-		var actualMarkers = line.getMarkers().map(toLightWeightMarker);
-		var expectedMarkers = _expectedMarkers.map(toLightWeightMarker);
+		let actualMarkers = line.getMarkers().map(toLightWeightMarker);
+		let expectedMarkers = _expectedMarkers.map(toLightWeightMarker);
 		assert.deepEqual(actualMarkers, expectedMarkers, 'markers');
 
-		var actualChangedMarkers = Object.keys(changedMarkers);
+		let actualChangedMarkers = Object.keys(changedMarkers);
 		actualChangedMarkers.sort().map(Object.prototype.toString);
 		assert.deepEqual(actualChangedMarkers, expectedChangedMarkers, 'changed markers');
 	}
@@ -1607,6 +1636,28 @@ suite('Editor Model - ModelLine.applyEdits text & markers', () => {
 		);
 	});
 
+	test('delete near markers', () => {
+		testLineEditMarkers(
+			'abcd',
+			[
+				marker(1, 3, true),
+				marker(2, 3, false)
+			],
+			[{
+				startColumn: 3,
+				endColumn: 4,
+				text: '',
+				forceMoveMarkers: false
+			}],
+			'abd',
+			[],
+			[
+				marker(1, 3, true),
+				marker(2, 3, false)
+			]
+		);
+	});
+
 	test('replace: updates markers 2', () => {
 		testLineEditMarkers(
 			'Hello world, how are you',
@@ -1784,19 +1835,41 @@ suite('Editor Model - ModelLine.applyEdits text & markers', () => {
 			[2],
 			[
 				marker(1, 1, false),
-				marker(2, 1, true),
+				marker(2, 4, true),
+			]
+		);
+	});
+
+	test('replace selection', () => {
+		testLineEditMarkers(
+			'first',
+			[
+				marker(1, 1, true),
+				marker(2, 6, false),
+			],
+			[{
+				startColumn: 1,
+				endColumn: 6,
+				text: 'something',
+				forceMoveMarkers: false
+			}],
+			'something',
+			[2],
+			[
+				marker(1, 1, true),
+				marker(2, 10, false),
 			]
 		);
 	});
 });
 
-suite('Editor Model - ModelLine.split text & markers', () => {
+suite('Editor Model - modelLine.split text & markers', () => {
 
 	function marker(id: number, column: number, stickToPreviousCharacter: boolean): LineMarker {
 		return new LineMarker(String(id), column, stickToPreviousCharacter);
 	}
 
-	function toLightWeightMarker(marker:ModelLine.ILineMarker): ILightWeightMarker {
+	function toLightWeightMarker(marker:ILineMarker): ILightWeightMarker {
 		return {
 			id: marker.id,
 			column: marker.column,
@@ -1805,24 +1878,24 @@ suite('Editor Model - ModelLine.split text & markers', () => {
 	}
 
 	function testLineSplitMarkers(initialText:string, initialMarkers: LineMarker[], splitColumn:number, forceMoveMarkers:boolean, expectedText1:string, expectedText2:string, expectedChangedMarkers:number[], _expectedMarkers1: LineMarker[], _expectedMarkers2: LineMarker[]): void {
-		var line = new ModelLine.ModelLine(1, initialText);
+		let line = new ModelLine(1, initialText, NO_TAB_SIZE);
 		line.addMarkers(initialMarkers);
 
-		var changedMarkers = Object.create(null);
-		var otherLine = line.split(changedMarkers, splitColumn, forceMoveMarkers);
+		let changedMarkers = Object.create(null);
+		let otherLine = line.split(changedMarkers, splitColumn, forceMoveMarkers, NO_TAB_SIZE);
 
 		assert.equal(line.text, expectedText1, 'text');
 		assert.equal(otherLine.text, expectedText2, 'text');
 
-		var actualMarkers1 = line.getMarkers().map(toLightWeightMarker);
-		var expectedMarkers1 = _expectedMarkers1.map(toLightWeightMarker);
+		let actualMarkers1 = line.getMarkers().map(toLightWeightMarker);
+		let expectedMarkers1 = _expectedMarkers1.map(toLightWeightMarker);
 		assert.deepEqual(actualMarkers1, expectedMarkers1, 'markers');
 
-		var actualMarkers2 = otherLine.getMarkers().map(toLightWeightMarker);
-		var expectedMarkers2 = _expectedMarkers2.map(toLightWeightMarker);
+		let actualMarkers2 = otherLine.getMarkers().map(toLightWeightMarker);
+		let expectedMarkers2 = _expectedMarkers2.map(toLightWeightMarker);
 		assert.deepEqual(actualMarkers2, expectedMarkers2, 'markers');
 
-		var actualChangedMarkers = Object.keys(changedMarkers);
+		let actualChangedMarkers = Object.keys(changedMarkers);
 		actualChangedMarkers.sort().map(Object.prototype.toString);
 		assert.deepEqual(actualChangedMarkers, expectedChangedMarkers, 'changed markers');
 	}
@@ -2058,13 +2131,13 @@ suite('Editor Model - ModelLine.split text & markers', () => {
 	});
 });
 
-suite('Editor Model - ModelLine.append text & markers', () => {
+suite('Editor Model - modelLine.append text & markers', () => {
 
 	function marker(id: number, column: number, stickToPreviousCharacter: boolean): LineMarker {
 		return new LineMarker(String(id), column, stickToPreviousCharacter);
 	}
 
-	function toLightWeightMarker(marker:ModelLine.ILineMarker): ILightWeightMarker {
+	function toLightWeightMarker(marker:ILineMarker): ILightWeightMarker {
 		return {
 			id: marker.id,
 			column: marker.column,
@@ -2073,22 +2146,22 @@ suite('Editor Model - ModelLine.append text & markers', () => {
 	}
 
 	function testLinePrependMarkers(aText:string, aMarkers: LineMarker[], bText:string, bMarkers: LineMarker[], expectedText:string, expectedChangedMarkers:number[], _expectedMarkers: LineMarker[]): void {
-		var a = new ModelLine.ModelLine(1, aText);
+		let a = new ModelLine(1, aText, NO_TAB_SIZE);
 		a.addMarkers(aMarkers);
 
-		var b = new ModelLine.ModelLine(1, bText);
+		let b = new ModelLine(1, bText, NO_TAB_SIZE);
 		b.addMarkers(bMarkers);
 
-		var changedMarkers = Object.create(null);
-		a.append(changedMarkers, b);
+		let changedMarkers = Object.create(null);
+		a.append(changedMarkers, b, NO_TAB_SIZE);
 
 		assert.equal(a.text, expectedText, 'text');
 
-		var actualMarkers = a.getMarkers().map(toLightWeightMarker);
-		var expectedMarkers = _expectedMarkers.map(toLightWeightMarker);
+		let actualMarkers = a.getMarkers().map(toLightWeightMarker);
+		let expectedMarkers = _expectedMarkers.map(toLightWeightMarker);
 		assert.deepEqual(actualMarkers, expectedMarkers, 'markers');
 
-		var actualChangedMarkers = Object.keys(changedMarkers);
+		let actualChangedMarkers = Object.keys(changedMarkers);
 		actualChangedMarkers.sort().map(Object.prototype.toString);
 		assert.deepEqual(actualChangedMarkers, expectedChangedMarkers, 'changed markers');
 	}
